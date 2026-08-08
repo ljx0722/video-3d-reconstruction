@@ -87,7 +87,7 @@ jobs:
             ${{ env.REGISTRY }}/${{ env.REPO }}-gpu-worker:sha-${{ github.sha }}
 
   deploy:
-    needs: [build-frontend, build-backend, build-gpu-worker]
+    needs: [build-frontend, build-backend]
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     environment: production
