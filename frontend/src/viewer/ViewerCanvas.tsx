@@ -1,29 +1,33 @@
 import { Suspense } from 'react';
 import { Canvas } from '@react-three/fiber';
-import { OrbitControls, PerspectiveCamera, Grid } from '@react-three/drei';
+import { OrbitControls, PerspectiveCamera } from '@react-three/drei';
 import { getResultUrl } from '../api/client';
 import ModelLoader from './ModelLoader';
+
+const POINT_SIZE = 0.008;
 
 interface Props {
   jobId: string;
 }
 
-const POINT_SIZE = 0.005;
-
 export default function ViewerCanvas({ jobId }: Props) {
-
   return (
-    <Canvas className="!absolute inset-0" gl={{ preserveDrawingBuffer: true }}>
-      <PerspectiveCamera makeDefault position={[5, 3, 5]} fov={60} />
-      <ambientLight intensity={0.5} />
-      <directionalLight position={[10, 10, 5]} intensity={0.3} />
+    <Canvas className="!absolute inset-0" gl={{ preserveDrawingBuffer: true, antialias: true }}>
+      <PerspectiveCamera makeDefault position={[2, 1, 3]} fov={50} />
+      <ambientLight intensity={0.6} />
+      <directionalLight position={[5, 5, 5]} intensity={0.4} />
 
       <Suspense fallback={null}>
         <ModelLoader url={getResultUrl(jobId)} pointSize={POINT_SIZE} />
       </Suspense>
 
-      <Grid infiniteGrid fadeDistance={50} fadeStrength={5} sectionSize={1} cellSize={0.5} />
-      <OrbitControls enableDamping dampingFactor={0.1} minDistance={0.5} maxDistance={50} />
+      <OrbitControls
+        enableDamping
+        dampingFactor={0.08}
+        minDistance={0.2}
+        maxDistance={20}
+        target={[0, 0, 0]}
+      />
     </Canvas>
   );
 }

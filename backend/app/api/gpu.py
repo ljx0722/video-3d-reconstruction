@@ -15,6 +15,16 @@ logger = logging.getLogger(__name__)
 GPU_SECRET = os.environ.get("GPU_SECRET", "gpu-worker-secret")
 
 
+@router.get("/video/{job_id}")
+async def serve_video(job_id: str):
+    """Serve the original uploaded video for the workbench viewer."""
+    job_dir = os.path.join(settings.upload_dir, job_id)
+    candidates = _glob.glob(os.path.join(job_dir, "video.*"))
+    if not candidates:
+        raise HTTPException(status_code=404, detail="Video not found")
+    return FileResponse(candidates[0], media_type="video/mp4")
+
+
 def _check_auth(request: Request):
     auth = request.headers.get("Authorization", "")
     if auth != f"Bearer {GPU_SECRET}" and GPU_SECRET != "gpu-worker-secret":
