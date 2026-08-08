@@ -52,8 +52,8 @@ export default function UploadZone() {
   return (
     <div className="max-w-2xl mx-auto px-4 pt-24 pb-12">
       <div className="text-center mb-8">
-        <h1 className="text-3xl font-bold mb-2">上传视频，生成三维模型</h1>
-        <p className="text-gray-400">在浏览器中自由浏览三维点云重建结果</p>
+        <h1 className="text-3xl font-bold mb-2">三维世界实验室</h1>
+        <p className="text-gray-400">上传视频，AI 自动生成可自由浏览的三维点云模型</p>
       </div>
 
       <div
