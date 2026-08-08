@@ -1,0 +1,19 @@
+name: Cleanup Console Duplicate
+
+on:
+  workflow_dispatch:
+
+jobs:
+  clean:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: azure/setup-kubectl@v4
+        with:
+          version: latest
+      - name: Clean
+        run: |
+          mkdir -p ~/.kube
+          echo "${{ secrets.SEALOS_KUBECONFIG }}" | base64 -d > ~/.kube/config
+          kubectl delete ingress network-iaxsziwcougg -n ns-mzyybqj8 --ignore-not-found=true
+          echo "=== Remaining Ingresses ==="
+          kubectl get ingress -n ns-mzyybqj8
