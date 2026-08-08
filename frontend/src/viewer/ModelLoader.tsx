@@ -5,10 +5,12 @@ import * as THREE from 'three';
 interface Props {
   url: string;
   pointSize: number;
+  opacity?: number;
   onPointsReady?: (mesh: THREE.Points) => void;
+  clipPlanes?: THREE.Plane[];
 }
 
-export default function ModelLoader({ url, pointSize, onPointsReady }: Props) {
+export default function ModelLoader({ url, pointSize, opacity = 1, onPointsReady, clipPlanes }: Props) {
   const { scene } = useGLTF(url);
 
   const points = useMemo(() => {
@@ -29,12 +31,9 @@ export default function ModelLoader({ url, pointSize, onPointsReady }: Props) {
 
     if (positions.length === 0) return null;
 
-    const posArr = new Float32Array(positions);
-    const colArr = new Float32Array(colors);
-
     const geo = new THREE.BufferGeometry();
-    geo.setAttribute('position', new THREE.BufferAttribute(posArr, 3));
-    geo.setAttribute('color', new THREE.BufferAttribute(colArr, 3));
+    geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(positions), 3));
+    geo.setAttribute('color', new THREE.BufferAttribute(new Float32Array(colors), 3));
 
     const mat = new THREE.PointsMaterial({
       size: pointSize,
@@ -42,21 +41,44 @@ export default function ModelLoader({ url, pointSize, onPointsReady }: Props) {
       sizeAttenuation: true,
       depthWrite: true,
       blending: THREE.NormalBlending,
+      transparent: opacity < 1,
+      opacity,
+      clippingPlanes: clipPlanes || [],
+      clipShadows: true,
     });
 
     return new THREE.Points(geo, mat);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [scene]);
 
-  // Adjust point size
+  // Update point size
   useEffect(() => {
     if (points) {
       (points.material as THREE.PointsMaterial).size = pointSize;
     }
   }, [pointSize, points]);
 
+  // Update opacity
+  useEffect(() => {
+    if (points) {
+      const mat = points.material as THREE.PointsMaterial;
+      mat.opacity = opacity;
+      mat.transparent = opacity < 1;
+    }
+  }, [opacity, points]);
+
+  // Update clipping planes
+  useEffect(() => {
+    if (points) {
+      (points.material as THREE.PointsMaterial).clippingPlanes = clipPlanes || [];
+    }
+  }, [clipPlanes, points]);
+
   // Notify parent
   useEffect(() => {
-    if (points && onPointsReady) onPointsReady(points);
+    if (points && onPointsReady) {
+      onPointsReady(points);
+    }
   }, [points, onPointsReady]);
 
   if (!points) return null;
