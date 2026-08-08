@@ -217,8 +217,8 @@ def process_video(video_path: str, settings: dict) -> str:
 
         S, H, W = depth.shape[0], depth.shape[1], depth.shape[2]
 
-        # Take ~30 well-spaced keyframes
-        keyframe_step = max(1, S // 30)
+        # Take ~20 evenly-spaced keyframes for good coverage, less overlap
+        keyframe_step = max(1, S // 20)
         keyframe_idx = list(range(0, S, keyframe_step))
         n_keyframes = len(keyframe_idx)
         logger.info(f"Keyframes: {S} -> {n_keyframes}")
@@ -246,13 +246,18 @@ def process_video(video_path: str, settings: dict) -> str:
             img_f = img[fi].transpose(1, 2, 0) if img.shape[1] == 3 else img[fi]
 
             # Depth validity
-            valid = (z > 0.1) & (z < 80)
+            z_mask = (z > 0.1) & (z < 80)
 
-            # Confidence per-pixel (for winner-take-all, NOT hard threshold)
+            # Strict confidence: keep only the top 25% most confident pixels this frame
+            # This removes noisy depth estimates that cause ghosting
             if depth_conf_data is not None:
-                cf = depth_conf_data[fi]
-                cf_valid = cf[valid]  # (N,) confidence scores for valid pixels
+                cf_frame = depth_conf_data[fi]
+                cf_pct = np.percentile(cf_frame[cf_frame > 0], 75)  # top 25%
+                cf_mask = cf_frame > cf_pct
+                valid = z_mask & cf_mask
+                cf_valid = cf_frame[valid]
             else:
+                valid = z_mask
                 cf_valid = np.ones(int(valid.sum()), dtype=np.float32)
 
             all_world_pts.append(pts_w[valid])
@@ -269,8 +274,9 @@ def process_video(video_path: str, settings: dict) -> str:
         bbox_min = vertices.min(axis=0)
         bbox_max = vertices.max(axis=0)
         scene_diag = float(np.linalg.norm(bbox_max - bbox_min))
-        # Cell size: 0.15% of scene diagonal, bounded to [3mm, 3cm]
-        cell = max(0.003, min(0.03, scene_diag * 0.0015))
+        # Cell size: 0.3% of scene diagonal to catch pose drift between frames,
+        # bounded to [5mm, 5cm] so it works for both small objects and outdoor scenes
+        cell = max(0.005, min(0.05, scene_diag * 0.003))
         logger.info(f"Scene: {scene_diag:.2f}m → cell: {cell*1000:.1f}mm")
 
         # Grid-based winner-take-all: in each cell, keep ONLY the highest-confidence point
@@ -294,8 +300,8 @@ def process_video(video_path: str, settings: dict) -> str:
         # treatment (up to 3cm) — preventing both ghosting AND under-sampling.
 
         # Cap for browser rendering
-        if len(vertices) > 800000:
-            idx = np.random.choice(len(vertices), 800000, replace=False)
+        if len(vertices) > 1200000:
+            idx = np.random.choice(len(vertices), 1200000, replace=False)
             vertices = vertices[idx]; colors = colors[idx]
             logger.info(f"Capped to 800K points")
 
