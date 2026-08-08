@@ -173,49 +173,53 @@ def process_video(video_path: str, settings: dict) -> str:
     # Compute world_points_from_depth (needed for GLB export)
     if "world_points" not in predictions and "depth" in predictions:
         logger.info("Computing world_points_from_depth...")
-        depth = predictions["depth"]  # (B, S, H, W, 1) or (S, H, W, 1)
-        H, W = depth.shape[-3], depth.shape[-2]
-        S = depth.shape[-4] if depth.ndim >= 4 else depth.shape[0]
+        depth_t = predictions["depth"].clone()  # (B, S, H, W, 1)
+        if depth_t.ndim == 5:
+            depth_t = depth_t[0]  # (S, H, W, 1)
+        S, H, W = depth_t.shape[0], depth_t.shape[1], depth_t.shape[2]
 
-        # Create pixel grid
-        fy, fx = torch.meshgrid(
-            torch.arange(H, device=depth.device, dtype=depth.dtype),
-            torch.arange(W, device=depth.device, dtype=depth.dtype),
-            indexing="ij",
-        )
-        # Normalize coords using intrinsics
-        if intrinsic.ndim == 4:
-            intr = intrinsic[0]  # (S, 3, 3)
-        else:
-            intr = intrinsic
-        cx = intr[..., 0, 2].view(-1, 1, 1)
-        cy = intr[..., 1, 2].view(-1, 1, 1)
-        f_x = intr[..., 0, 0].view(-1, 1, 1)
-        f_y = intr[..., 1, 1].view(-1, 1, 1)
+        # Get intrinsics
+        intr = predictions["intrinsic"]
+        if intr.ndim == 4:
+            intr = intr[0]  # (S, 3, 3)
 
-        # Unproject: camera-space points
-        # depth format: (B, S, H, W, 1) or (S, H, W, 1)
-        d = depth.squeeze(-1)  # (S, H, W)
-        x_cam = (fx.unsqueeze(0) - cx) / f_x * d if fx.ndim >= 3 else (fx - cx) / f_x * d
-        y_cam = (fy.unsqueeze(0) - cy) / f_y * d if fy.ndim >= 3 else (fy - cy) / f_y * d
+        # Get extrinsics (c2w)
+        ext_t = predictions["extrinsic"]
+        if ext_t.ndim == 4:
+            ext_t = ext_t[0]  # (S, 3, 4)
 
-        # Transform to world space using extrinsic (c2w)
-        # ext_4x4: (B, S, 4, 4)
-        R = ext_4x4[..., :3, :3]  # (B, S, 3, 3)
-        t = ext_4x4[..., :3, 3:4]  # (B, S, 3, 1)
-        if R.ndim == 4:
-            R = R[0]  # (S, 3, 3)
-            t = t[0]  # (S, 3, 1)
-        # Apply rotation + translation per-frame
         world_pts = []
         for si in range(S):
-            pts_cam = torch.stack([
-                x_cam[si].reshape(-1),
-                y_cam[si].reshape(-1),
-                d[si].reshape(-1),
-            ], dim=1)  # (H*W, 3)
-            pts_world = pts_cam @ R[si].T + t[si].squeeze(-1)  # (H*W, 3)
-            world_pts.append(pts_world.reshape(H, W, 3))
+            d = depth_t[si, :, :, 0]  # (H, W)
+            fx = intr[si, 0, 0].item()
+            fy = intr[si, 1, 1].item()
+            ppx = intr[si, 0, 2].item()
+            ppy = intr[si, 1, 2].item()
+
+            # Create pixel grid
+            yy, xx = torch.meshgrid(
+                torch.arange(H, device=depth_t.device),
+                torch.arange(W, device=depth_t.device),
+                indexing="ij",
+            )
+            xx = xx.float()
+            yy = yy.float()
+
+            # Camera-space coordinates
+            z = d
+            x = (xx - ppx) * z / fx
+            y = (yy - ppy) * z / fy
+
+            # Stack
+            pts_cam = torch.stack([x, y, z], dim=-1).reshape(-1, 3)  # (H*W, 3)
+
+            # Transform to world using extrinsics (c2w)
+            R = ext_t[si, :, :3]  # (3, 3)
+            T = ext_t[si, :, 3]   # (3,)
+            pts_w = pts_cam @ R.T + T
+
+            world_pts.append(pts_w.reshape(H, W, 3))
+
         predictions["world_points_from_depth"] = torch.stack(world_pts, dim=0).unsqueeze(0)  # (1, S, H, W, 3)
         logger.info("world_points_from_depth computed")
 
