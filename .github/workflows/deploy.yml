@@ -70,6 +70,13 @@ jobs:
         run: |
           mkdir -p ~/.kube
           echo "${{ secrets.SEALOS_KUBECONFIG }}" | base64 -d > ~/.kube/config
+      - name: Cleanup stale deployments
+        run: |
+          kubectl delete deployment postgres -n ns-mzyybqj8 --ignore-not-found=true || true
+          kubectl delete deployment redis -n ns-mzyybqj8 --ignore-not-found=true || true
+          kubectl delete deployment minio -n ns-mzyybqj8 --ignore-not-found=true || true
+          kubectl delete deployment gpu-worker -n ns-mzyybqj8 --ignore-not-found=true || true
+          kubectl delete pvc minio-data-pvc pgdata-pvc model-pvc -n ns-mzyybqj8 --ignore-not-found=true || true
       - name: Apply manifests
         run: |
           kubectl apply -f deploy/sealos/ingress.yaml
