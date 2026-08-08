@@ -6,3 +6,6 @@ pydantic>=2.8.0
 pydantic-settings>=2.4.0
 python-multipart>=0.0.9
 aiofiles>=24.1.0
+opencv-python-headless>=4.9.0
+trimesh>=4.4.0
+numpy>=1.26.0

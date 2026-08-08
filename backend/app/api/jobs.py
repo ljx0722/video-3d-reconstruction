@@ -1,14 +1,14 @@
 import json
 import uuid
 import logging
-import aiofiles
+import asyncio
 import os
 from fastapi import APIRouter, UploadFile, File, Form, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
-from app.database import get_db
+from app.database import get_db, async_session
 from app.models.job import Job
 from app.schemas.job import JobSettings
-from app.services import storage_service
+from app.services import storage_service, processor
 from sqlalchemy import select, desc
 
 router = APIRouter(prefix="/api/v1")
@@ -51,6 +51,9 @@ async def upload_job(
     )
     db.add(job)
     await db.commit()
+
+    # Kick off background processing (CPU-based, no GPU needed)
+    asyncio.create_task(processor.process_video(job_id, app_settings.upload_dir, async_session))
 
     return {"id": job_id, "status": "uploaded"}
 
