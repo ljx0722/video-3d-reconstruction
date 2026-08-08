@@ -1,13 +1,14 @@
-import { useMemo } from 'react';
+import { useMemo, useEffect } from 'react';
 import { useGLTF } from '@react-three/drei';
 import * as THREE from 'three';
 
 interface Props {
   url: string;
   pointSize: number;
+  onPointsReady?: (mesh: THREE.Points) => void;
 }
 
-export default function ModelLoader({ url, pointSize }: Props) {
+export default function ModelLoader({ url, pointSize, onPointsReady }: Props) {
   const { scene } = useGLTF(url);
 
   const points = useMemo(() => {
@@ -28,9 +29,12 @@ export default function ModelLoader({ url, pointSize }: Props) {
 
     if (positions.length === 0) return null;
 
-    const mergedGeo = new THREE.BufferGeometry();
-    mergedGeo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
-    mergedGeo.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
+    const posArr = new Float32Array(positions);
+    const colArr = new Float32Array(colors);
+
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.BufferAttribute(posArr, 3));
+    geo.setAttribute('color', new THREE.BufferAttribute(colArr, 3));
 
     const mat = new THREE.PointsMaterial({
       size: pointSize,
@@ -40,8 +44,20 @@ export default function ModelLoader({ url, pointSize }: Props) {
       blending: THREE.NormalBlending,
     });
 
-    return new THREE.Points(mergedGeo, mat);
-  }, [scene, pointSize]);
+    return new THREE.Points(geo, mat);
+  }, [scene]);
+
+  // Adjust point size
+  useEffect(() => {
+    if (points) {
+      (points.material as THREE.PointsMaterial).size = pointSize;
+    }
+  }, [pointSize, points]);
+
+  // Notify parent
+  useEffect(() => {
+    if (points && onPointsReady) onPointsReady(points);
+  }, [points, onPointsReady]);
 
   if (!points) return null;
   return <primitive object={points} />;
