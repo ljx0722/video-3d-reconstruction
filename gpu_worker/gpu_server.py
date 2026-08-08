@@ -250,49 +250,110 @@ def process_video(video_path: str, settings: dict) -> str:
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
 
-    # Build GLB directly with trimesh
+    # Build GLB: voxel-merge, confidence filter, camera trail
     import trimesh
 
-    # Images at (S, 3, H, W) — downsample to match world_points skip=2
+    # Downsample images to match world_points (skip=2)
     imgs_full = vis_pred["images"]  # (S, 3, 518, 378)
-    imgs_ds = imgs_full[:, :, ::2, ::2]  # (S, 3, 259, 189)
-    imgs_hwc = imgs_ds.transpose(0, 2, 3, 1)  # (S, 259, 189, 3) - HWC for color
+    imgs_ds = imgs_full[:, :, ::skip, ::skip]  # (S, 3, 259, 189)
+    imgs_hwc = imgs_ds.transpose(0, 2, 3, 1)  # (S, 259, 189, 3)
 
-    # Take ~50 evenly-spaced keyframes
-    step = max(1, num_frames // 50)
+    # Use depth confidence to filter (top 30% most confident pixels)
+    depth_conf = vis_pred.get("depth_conf")  # (S, h_act, w_act)
+    logger.info(f"depth_conf shape: {depth_conf.shape if depth_conf is not None else 'N/A'}")
+
+    # Take ~20 well-spaced keyframes for clean reconstruction
+    step = max(1, num_frames // 20)
     indices = list(range(0, num_frames, step))
-    all_vertices = []
-    all_colors = []
+    logger.info(f"Keyframes: {num_frames} -> {len(indices)} (step={step})")
 
+    # Collect camera positions from extrinsic (c2w)
+    camera_positions = []
+    ext_data = vis_pred.get("extrinsic")  # (S, 3, 4)
+    if ext_data is not None:
+        for fi in range(num_frames):
+            camera_positions.append(ext_data[fi, :, 3] / ext_data[fi, 3, 3] if ext_data.shape[-1] == 4 else ext_data[fi, :, 3])
+
+    # Build per-frame point cloud with confidence filtering
+    all_verts = []
+    all_cols = []
     for fi in indices:
         pts_w = vis_pred["world_points_from_depth"][fi]  # (h_act, w_act, 3)
+        h_a, w_a = pts_w.shape[:2]
         verts = pts_w.reshape(-1, 3)
-        cols = imgs_hwc[fi].reshape(-1, 3)  # matching shape
+        # Get colors (match resolution)
+        cols = imgs_hwc[fi].reshape(-1, 3)
 
-        # Filter zero-depth / invalid points
-        valid = (verts[:, 2] > 0.05) & (verts[:, 2] < 100)
+        # Depth filter
+        valid_z = (verts[:, 2] > 0.1) & (verts[:, 2] < 80)
+
+        # Confidence filter (keep top 40% confident pixels)
+        if depth_conf is not None:
+            cf_frame = depth_conf[fi].reshape(-1)
+            cf_thres = np.percentile(cf_frame[cf_frame > 0], 40) if (cf_frame > 0).any() else 0
+            valid = valid_z & (cf_frame > cf_thres)
+        else:
+            valid = valid_z
+
         verts = verts[valid]
         cols = cols[valid]
-
         if len(verts) > 0:
-            all_vertices.append(verts)
-            all_colors.append(cols)
+            all_verts.append(verts)
+            all_cols.append(cols)
 
-    if not all_vertices:
+    if not all_verts:
         raise ValueError("No valid points after filtering")
 
-    vertices = np.concatenate(all_vertices, axis=0)
-    colors = np.concatenate(all_colors, axis=0)
+    vertices = np.concatenate(all_verts, axis=0)
+    colors = np.concatenate(all_cols, axis=0)
+    logger.info(f"Before voxel merge: {len(vertices)} points")
 
-    # Cap at 2M points
-    if len(vertices) > 2000000:
-        idx = np.random.choice(len(vertices), 2000000, replace=False)
+    # Voxel merge: average overlapping points
+    voxel_size = 0.015
+    if len(vertices) > 0:
+        vk = np.floor(vertices / voxel_size).astype(np.int32)
+        vd: dict = {}
+        for i in range(len(vertices)):
+            k = (vk[i, 0], vk[i, 1], vk[i, 2])
+            if k not in vd:
+                vd[k] = {"p": [0.0, 0.0, 0.0], "c": [0.0, 0.0, 0.0], "n": 0}
+            v = vd[k]
+            v["p"][0] += float(vertices[i, 0]); v["p"][1] += float(vertices[i, 1]); v["p"][2] += float(vertices[i, 2])
+            v["c"][0] += float(colors[i, 0]); v["c"][1] += float(colors[i, 1]); v["c"][2] += float(colors[i, 2])
+            v["n"] += 1
+        nv = len(vd)
+        vm = np.zeros((nv, 3), dtype=np.float32)
+        cm = np.zeros((nv, 3), dtype=np.float32)
+        for i, v in enumerate(vd.values()):
+            vm[i] = [v["p"][0]/v["n"], v["p"][1]/v["n"], v["p"][2]/v["n"]]
+            cm[i] = [v["c"][0]/v["n"], v["c"][1]/v["n"], v["c"][2]/v["n"]]
+        vertices = vm
+        colors = cm
+        logger.info(f"After voxel merge: {len(vertices)} points")
+
+    # Cap
+    if len(vertices) > 1500000:
+        idx = np.random.choice(len(vertices), 1500000, replace=False)
         vertices = vertices[idx]
         colors = colors[idx]
 
+    # Build trimesh scene
     scene = trimesh.Scene()
     pc = trimesh.PointCloud(vertices=vertices, colors=colors)
     scene.add_geometry(pc)
+
+    # Camera trail
+    if len(camera_positions) > 0:
+        cam_verts = np.array(camera_positions)
+        cs = max(1, len(cam_verts) // 20)
+        cvd = cam_verts[::cs]
+        for i, cp in enumerate(cvd):
+            s = trimesh.creation.icosphere(subdivisions=2, radius=0.015)
+            t = i / max(1, len(cvd) - 1)
+            s.visual.vertex_colors = np.tile([int(255*(1-t)), 50, int(255*t)], (len(s.vertices), 1)).astype(np.uint8)
+            s.apply_translation(cp.tolist())
+            scene.add_geometry(s)
+
     centroid = vertices.mean(axis=0)
     scene.apply_translation(-centroid)
 

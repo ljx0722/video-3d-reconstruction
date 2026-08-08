@@ -240,7 +240,7 @@ export default function ViewerPage() {
   if (!job) return <div className="flex items-center justify-center h-full"><div className="w-12 h-12 border-4 border-blue-500 border-t-transparent rounded-full animate-spin" /></div>;
 
   return (
-    <div className="h-[calc(100vh-7.5rem)] flex">
+    <div className="h-[calc(100vh-2.5rem)] flex">
       {/* Left Panel */}
       <div className="w-64 flex-shrink-0 border-r border-gray-800 bg-gray-950 flex flex-col overflow-hidden">
         <div className="p-3 border-b border-gray-800">
