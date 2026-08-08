@@ -1,11 +1,11 @@
 import json
 import uuid
 import logging
-import asyncio
+import threading
 import os
 from fastapi import APIRouter, UploadFile, File, Form, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
-from app.database import get_db, async_session
+from app.database import get_db
 from app.models.job import Job
 from app.schemas.job import JobSettings
 from app.services import storage_service, processor
@@ -35,7 +35,7 @@ async def upload_job(
 
     from app.config import settings as app_settings
     if file_size_mb > app_settings.max_video_size_mb:
-        raise HTTPException(status_code=413, detail=f"File exceeds {app_settings.max_video_size_mb}MB limit")
+        raise HTTPException(status_code=413, detail=f"文件超过{app_settings.max_video_size_mb}MB限制")
 
     job_id = str(uuid.uuid4())
 
@@ -52,8 +52,13 @@ async def upload_job(
     db.add(job)
     await db.commit()
 
-    # Kick off background processing (CPU-based, no GPU needed)
-    asyncio.create_task(processor.process_video(job_id, app_settings.upload_dir, async_session))
+    # Kick off processing in background thread
+    t = threading.Thread(
+        target=processor.process_video_sync,
+        args=(job_id, app_settings.upload_dir, app_settings.database_url),
+        daemon=True,
+    )
+    t.start()
 
     return {"id": job_id, "status": "uploaded"}
 
