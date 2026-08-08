@@ -15,9 +15,18 @@ async def process_video(job_id: str, upload_dir: str, db_session_factory):
     Extracts frames, creates a spatial point cloud from video pixels,
     exports as GLB, and updates job status in DB.
     """
-    import trimesh
-    from sqlalchemy import select
+    try:
+        await _process_video_impl(job_id, upload_dir, db_session_factory)
+    except Exception as e:
+        logger.exception(f"Job {job_id} failed")
+        await _update_job(db_session_factory, job_id, "failed", 0, error=str(e))
 
+
+async def _process_video_impl(job_id: str, upload_dir: str, db_session_factory):
+    import trimesh
+
+
+async def _process_video_impl(job_id: str, upload_dir: str, db_session_factory):
     job_dir = os.path.join(upload_dir, job_id)
     video_path = os.path.join(job_dir, "video.mp4")
     settings_path = os.path.join(job_dir, "settings.json")
@@ -27,7 +36,7 @@ async def process_video(job_id: str, upload_dir: str, db_session_factory):
     settings = {"fps": 10, "mode": "streaming", "conf_threshold": 1.5}
     if os.path.exists(settings_path):
         with open(settings_path) as f:
-            settings.update(json.loads(f))
+            settings.update(json.load(f))
 
     fps = settings.get("fps", 10)
 
