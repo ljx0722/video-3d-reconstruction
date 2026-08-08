@@ -27,7 +27,8 @@ export default function ViewerPage() {
 
   if (job.status === 'uploaded' || job.status === 'queued' || job.status === 'processing') {
     const statusLabel = statusMap[job.status] || job.status;
-    const progressPct = Math.max(5, (job.progress || 0) * 100);
+    const rawProgress = (job.progress || 0) * 100;
+    const progressPct = Math.max(2, Math.min(100, rawProgress));
     return (
       <div className="max-w-lg mx-auto px-4 pt-24 text-center">
         <div className="w-20 h-20 mx-auto mb-6 relative">
