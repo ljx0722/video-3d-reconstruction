@@ -183,12 +183,12 @@ def process_video(video_path: str, settings: dict) -> str:
         ext_t = predictions["extrinsic"]
         if ext_t.ndim == 4: ext_t = ext_t[0]
 
-        # Subsampled resolution
-        skip = 3
+        # Subsampled resolution: 2x (doubles point density vs 3x)
+        skip = 2
 
         world_pts_dense = []
         for si in range(S):
-            d = depth_t[si, ::skip, ::skip, 0]  # actual shape (h_act, w_act)
+            d = depth_t[si, ::skip, ::skip, 0]
             h_act, w_act = d.shape
             fx = intr[si, 0, 0].item()
             fy = intr[si, 1, 1].item()
@@ -218,15 +218,7 @@ def process_video(video_path: str, settings: dict) -> str:
 
         predictions["world_points_from_depth"] = torch.stack(world_pts_dense, dim=0).unsqueeze(0)
         predictions["depth_conf"] = depth_t[:, ::skip, ::skip, 0]
-        logger.info(f"world_points_from_depth computed: {S}x{h_act}x{w_act}")
-        predictions["world_points_from_depth"] = torch.stack(world_pts_dense, dim=0).unsqueeze(0)
-        predictions["depth_conf"] = depth_t[:, ::skip, ::skip]  # Downsampled confidence
-        # Downsample images to match
-        images_ds = images[:, ::skip, ::skip, :] if images.ndim == 5 else images[::skip, ::skip, :]
-        if images_ds.ndim == 4 and images.ndim == 5:
-            images_ds = images_ds.unsqueeze(0)
-        predictions["images"] = images_ds
-        logger.info(f"world_points_from_depth: {S} frames")
+        logger.info(f"world_points_from_depth: {S}x{h_act}x{w_act}")
 
     # Move to CPU and convert to numpy
     vis_pred = {}
@@ -241,26 +233,30 @@ def process_video(video_path: str, settings: dict) -> str:
         else:
             vis_pred[k] = v
 
-    # Downsample images to match world_points spatial resolution
-    # world_points at skip=3: (S, 173, 126, 3)
-    # images currently at full res: (S, 3, 518, 378) or (S, 518, 378, 3)
-    imgs_t = images  # (B, S, 3, H, W) or (S, 3, H, W)
+    # Keep images at full resolution for GLB color extraction
+    imgs_t = images
     if imgs_t.ndim == 5 and imgs_t.shape[0] == 1:
         imgs_t = imgs_t[0]
-    # images format: (S, 3, H, W)
+    # images format: (S, 3, H, W) for CHW, or (S, H, W, 3) for HWC
     if imgs_t.shape[1] == 3:
         imgs_np = imgs_t.cpu().numpy()  # (S, 3, 518, 378)
+        vis_pred["images"] = imgs_np  # Keep as (S, 3, H, W)
     else:
         # (S, H, W, 3) -> (S, 3, H, W)
         imgs_np = imgs_t.permute(0, 3, 1, 2).cpu().numpy()
-    vis_pred["images"] = imgs_np  # keep full-res, we'll resize when building GLB
+        vis_pred["images"] = imgs_np
 
     del images, predictions
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
 
-    # Build GLB directly with trimesh — much faster & smaller than predictions_to_glb
+    # Build GLB directly with trimesh
     import trimesh
+
+    # Images at (S, 3, H, W) — downsample to match world_points skip=2
+    imgs_full = vis_pred["images"]  # (S, 3, 518, 378)
+    imgs_ds = imgs_full[:, :, ::2, ::2]  # (S, 3, 259, 189)
+    imgs_hwc = imgs_ds.transpose(0, 2, 3, 1)  # (S, 259, 189, 3) - HWC for color
 
     # Take ~50 evenly-spaced keyframes
     step = max(1, num_frames // 50)
@@ -269,22 +265,14 @@ def process_video(video_path: str, settings: dict) -> str:
     all_colors = []
 
     for fi in indices:
-        # world points for this frame: (H, W, 3)
-        pts_w = vis_pred["world_points_from_depth"][fi]  # numpy (H, W, 3)
-        # Colors from images
-        img = vis_pred["images"]  # (S, 3, H, W)
-        img_f = img[fi].transpose(1, 2, 0)  # (H, W, 3) -> now at full res
-        # Resize image to match downsized points
-        from PIL import Image
-        pil_img = Image.fromarray((img_f * 255).astype('uint8'))
-        pil_img = pil_img.resize((pts_w.shape[1], pts_w.shape[0]), Image.LANCZOS)
-        colors = np.array(pil_img).reshape(-1, 3)
-
+        pts_w = vis_pred["world_points_from_depth"][fi]  # (h_act, w_act, 3)
         verts = pts_w.reshape(-1, 3)
-        # Filter zero-depth points
-        valid = (verts[:, 2] > 0.01) & (verts[:, 2] < 100)
+        cols = imgs_hwc[fi].reshape(-1, 3)  # matching shape
+
+        # Filter zero-depth / invalid points
+        valid = (verts[:, 2] > 0.05) & (verts[:, 2] < 100)
         verts = verts[valid]
-        cols = colors[valid]
+        cols = cols[valid]
 
         if len(verts) > 0:
             all_vertices.append(verts)
@@ -296,9 +284,9 @@ def process_video(video_path: str, settings: dict) -> str:
     vertices = np.concatenate(all_vertices, axis=0)
     colors = np.concatenate(all_colors, axis=0)
 
-    # Cap at 500K points for smooth browser rendering
-    if len(vertices) > 500000:
-        idx = np.random.choice(len(vertices), 500000, replace=False)
+    # Cap at 2M points
+    if len(vertices) > 2000000:
+        idx = np.random.choice(len(vertices), 2000000, replace=False)
         vertices = vertices[idx]
         colors = colors[idx]
 
@@ -309,7 +297,6 @@ def process_video(video_path: str, settings: dict) -> str:
     scene.apply_translation(-centroid)
 
     glb_path = os.path.join(tmpdir, "output.glb")
-    scene.export(glb_path)
     scene.export(glb_path)
 
     size_mb = os.path.getsize(glb_path) / (1024 * 1024)
