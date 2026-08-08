@@ -97,6 +97,10 @@ jobs:
           echo "=== Pods ===" && kubectl get pods -n ns-mzyybqj8
           echo "=== Deployments ===" && kubectl get deployments -n ns-mzyybqj8
           echo "=== Ingress ===" && kubectl get ingress -n ns-mzyybqj8 -o wide
-          echo "=== Thesis Ingress (reference) ===" && kubectl get ingress network-oemerapgofht -n ns-mzyybqj8 -o yaml | head -40 || true
-          echo "=== CRDs (sealos related) ===" && kubectl get crd 2>/dev/null | grep -i sealos || true
+          echo "=== Check Sealos App CRDs ==="
+          kubectl api-resources 2>/dev/null | grep -iE "sealos|app-deploy" || echo "no sealos CRDs found"
+          echo "=== Gesture Island Ingress (recent console app) ==="
+          kubectl get ingress network-pqkdiobdatlv -n ns-mzyybqj8 -o yaml 2>/dev/null || echo "not found"
+          echo "=== All resources in namespace ==="
+          kubectl get all -n ns-mzyybqj8 2>/dev/null | head -40 || true
           echo "=== Backend logs ===" && kubectl logs -n ns-mzyybqj8 deployment/backend --tail=30 || true
