@@ -1,0 +1,30 @@
+name: Quick Deploy Check
+
+on:
+  workflow_dispatch:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: azure/setup-kubectl@v4
+        with:
+          version: latest
+      - name: Check
+        run: |
+          mkdir -p ~/.kube
+          echo "${{ secrets.SEALOS_KUBECONFIG }}" | base64 -d > ~/.kube/config
+          echo === All Deployments ===
+          kubectl get deploy -n ns-mzyybqj8
+          echo === All Pods ===
+          kubectl get pods -n ns-mzyybqj8
+          echo === All Services ===
+          kubectl get svc -n ns-mzyybqj8
+          echo === All Ingresses ===
+          kubectl get ingress -n ns-mzyybqj8
+          echo === Frontend deploy detail ===
+          kubectl get deploy frontend -n ns-mzyybqj8 -o yaml 2>/dev/null || echo no-frontend
+          echo === Backend deploy detail ===
+          kubectl get deploy backend -n ns-mzyybqj8 -o yaml 2>/dev/null || echo no-backend
+          echo === video-3d-reconstruction deploy ===
+          kubectl get deploy -n ns-mzyybqj8 -l 'cloud.sealos.io/app-deploy-manager=video-3d-reconstruction' -o wide 2>/dev/null || echo none
