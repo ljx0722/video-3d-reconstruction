@@ -1,0 +1,20 @@
+name: Get Backend Logs
+
+on:
+  workflow_dispatch:
+
+jobs:
+  logs:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: azure/setup-kubectl@v4
+        with:
+          version: latest
+      - name: Get Logs
+        run: |
+          mkdir -p ~/.kube
+          echo "${{ secrets.SEALOS_KUBECONFIG }}" | base64 -d > ~/.kube/config
+          echo === BACKEND_LOGS ===
+          kubectl logs -n ns-mzyybqj8 deployment/video2gauss -c backend --tail=100
+          echo === FRONTEND_LOGS ===
+          kubectl logs -n ns-mzyybqj8 deployment/video2gauss -c frontend --tail=30

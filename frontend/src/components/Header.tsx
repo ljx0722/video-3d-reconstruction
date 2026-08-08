@@ -8,14 +8,14 @@ export default function Header() {
       <div className="max-w-7xl mx-auto px-4 h-14 flex items-center justify-between">
         <Link to="/" className="flex items-center gap-2 text-lg font-semibold tracking-tight">
           <span className="w-8 h-8 rounded-lg bg-gradient-to-br from-blue-500 to-purple-600 flex items-center justify-center text-sm font-bold">3D</span>
-          Video2Gauss
+          视频转3D重建
         </Link>
         <nav className="flex gap-6 text-sm">
           <Link to="/" className={pathname === '/' ? 'text-white' : 'text-gray-400 hover:text-white transition-colors'}>
-            Upload
+            上传视频
           </Link>
           <Link to="/jobs" className={pathname === '/jobs' ? 'text-white' : 'text-gray-400 hover:text-white transition-colors'}>
-            Jobs
+            作业历史
           </Link>
         </nav>
       </div>
