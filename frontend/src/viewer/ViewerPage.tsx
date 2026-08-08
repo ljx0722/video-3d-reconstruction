@@ -34,6 +34,7 @@ export default function ViewerPage() {
   const [pointSize, setPointSize] = useState(POINT_SIZE);
   const [opacity, setOpacity] = useState(1);
   const [showAxes, setShowAxes] = useState(false);
+  const [orthographic, setOrthographic] = useState(false);
 
   // Processing
   const [pointCount, setPointCount] = useState(0);
@@ -299,11 +300,12 @@ export default function ViewerPage() {
             <ViewerCanvas jobId={job.id} pointSize={pointSize} opacity={opacity}
               onPointsReady={handlePointsReady}
               clipPlanes={clipPlanes} boxClip={boxClip}
-              showAxes={showAxes} />
+              showAxes={showAxes} orthographic={orthographic} />
             <ControlsPanel
               pointSize={pointSize} setPointSize={setPointSize}
               opacity={opacity} setOpacity={setOpacity}
               pointCount={pointCount} originalCount={originalCount}
+              orthographic={orthographic} setOrthographic={setOrthographic}
               onVoxelDownsample={doVoxelDownsample}
               onOutlierRemove={doOutlierRemove}
               onReset={doReset}

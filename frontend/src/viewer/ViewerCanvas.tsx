@@ -14,6 +14,7 @@ interface Props {
   clipPlanes?: ClipPlane[];
   boxClip?: BoxClip;
   showAxes?: boolean;
+  orthographic?: boolean;
 }
 
 function ClippingPlanes3D({ clipPlanes, boxClip }: { clipPlanes: ClipPlane[]; boxClip: BoxClip }) {
@@ -90,7 +91,7 @@ function AxesHelper() {
 
 export default function ViewerCanvas({
   jobId, pointSize, opacity = 1, onPointsReady,
-  clipPlanes, boxClip, showAxes,
+  clipPlanes, boxClip, showAxes, orthographic,
 }: Props) {
   const defaultClipPlanes: ClipPlane[] = clipPlanes || [
     { axis: 'x', offset: -1.5, enabled: false, negative: false },
@@ -117,9 +118,13 @@ export default function ViewerCanvas({
 
   return (
     <Canvas
+      key={orthographic ? 'ortho' : 'persp'}
       className="!absolute inset-0"
       gl={{ preserveDrawingBuffer: true, antialias: true, localClippingEnabled: true }}
-      camera={{ position: [2, 1, 3], fov: 50 }}
+      orthographic={orthographic}
+      camera={orthographic
+        ? { position: [2, 1, 3], zoom: 80, near: 0.1, far: 200 }
+        : { position: [2, 1, 3], fov: 50 }}
       style={{ background: '#0a0a0f' }}
     >
       <ambientLight intensity={0.6} />
@@ -141,8 +146,8 @@ export default function ViewerCanvas({
       {/* Axis helper */}
       {showAxes && <AxesHelper />}
 
-      {/* Orientation Cube */}
-      <GizmoHelper alignment="bottom-right" margin={[80, 80]}>
+      {/* Orientation Cube - top right */}
+      <GizmoHelper alignment="top-right" margin={[80, 80]}>
         <GizmoViewport axisColors={['#ef4444', '#22c55e', '#3b82f6']} labelColor="#9ca3af" />
       </GizmoHelper>
 

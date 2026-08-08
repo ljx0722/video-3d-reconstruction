@@ -7,6 +7,7 @@ interface CtrlProps {
   pointSize: number; setPointSize: (v: number) => void;
   opacity: number; setOpacity: (v: number) => void;
   pointCount: number; originalCount: number;
+  orthographic: boolean; setOrthographic: (v: boolean) => void;
   onVoxelDownsample: (v: number) => void;
   onOutlierRemove: (k: number, s: number) => void;
   onReset: () => void;
@@ -35,12 +36,21 @@ export default function ControlsPanel(p: CtrlProps) {
 
   return (
     <>
-      {/* Point count badge - top left */}
-      <div className="absolute left-3 top-3 z-10 bg-gray-900/80 backdrop-blur rounded-lg px-3 py-1.5 text-xs text-gray-400 border border-gray-800">
-        点云 <span className="text-gray-200 font-mono">{(p.pointCount / 10000).toFixed(1)}万</span>
-        {p.pointCount !== p.originalCount && (
-          <span className="text-gray-600 ml-1">/ {(p.originalCount / 10000).toFixed(1)}万 原始</span>
-        )}
+      {/* Point count + camera toggle - top left */}
+      <div className="absolute left-3 top-3 z-10 flex items-center gap-2">
+        <div className="bg-gray-900/80 backdrop-blur rounded-lg px-3 py-1.5 text-xs text-gray-400 border border-gray-800">
+          点云 <span className="text-gray-200 font-mono">{(p.pointCount / 10000).toFixed(1)}万</span>
+          {p.pointCount !== p.originalCount && (
+            <span className="text-gray-600 ml-1">/ {(p.originalCount / 10000).toFixed(1)}万</span>
+          )}
+        </div>
+        <button
+          onClick={() => p.setOrthographic(!p.orthographic)}
+          className="bg-gray-900/80 backdrop-blur rounded-lg px-2.5 py-1.5 text-xs text-gray-400 border border-gray-800 hover:bg-gray-800 transition-colors"
+          title={p.orthographic ? '切换到透视视图' : '切换到平行视图'}
+        >
+          {p.orthographic ? '平行' : '透视'}
+        </button>
       </div>
 
       {/* Floating circular controls - right side */}
