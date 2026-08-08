@@ -3,6 +3,8 @@ kind: Deployment
 metadata:
   name: backend
   namespace: ns-mzyybqj8
+  labels:
+    cloud.sealos.io/app-deploy-manager: video-3d-reconstruction
 spec:
   replicas: 1
   selector:
@@ -12,6 +14,7 @@ spec:
     metadata:
       labels:
         app: backend
+        cloud.sealos.io/app-deploy-manager: video-3d-reconstruction
     spec:
       containers:
         - name: backend
@@ -43,6 +46,8 @@ kind: Service
 metadata:
   name: backend
   namespace: ns-mzyybqj8
+  labels:
+    cloud.sealos.io/app-deploy-manager: video-3d-reconstruction
 spec:
   selector:
     app: backend
