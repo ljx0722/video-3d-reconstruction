@@ -6,11 +6,14 @@ export default function Header() {
   return (
     <header className="border-b border-gray-800 bg-gray-950/80 backdrop-blur sticky top-0 z-50">
       <div className="max-w-7xl mx-auto px-4 h-14 flex items-center justify-between">
-        <Link to="/" className="flex items-center gap-2.5">
+        <Link to="/" className="flex items-center gap-3">
           <img src="/logo.svg" alt="3D World Lab" className="w-9 h-9" />
           <div className="flex flex-col leading-none">
-            <span className="text-sm font-bold tracking-tight">三维世界实验室</span>
-            <span className="text-[10px] text-gray-500 tracking-wide">3D World Lab</span>
+            <div className="flex items-baseline gap-2">
+              <span className="text-sm font-bold tracking-tight">三维世界实验室</span>
+              <span className="text-[10px] text-gray-500">3D World Lab</span>
+            </div>
+            <span className="text-[10px] text-gray-500 tracking-wider">元智能 · Meta Intelligence</span>
           </div>
         </Link>
         <nav className="flex gap-6 text-sm">
