@@ -97,6 +97,13 @@ jobs:
           kubectl rollout status deployment/video2gauss -n ns-mzyybqj8 --timeout=120s
       - name: Status
         run: |
+          echo "=== GPU Nodes ===" && kubectl get nodes -o json 2>/dev/null | python3 -c "
+import json,sys
+for n in json.load(sys.stdin).get('items',[]):
+    name=n['metadata']['name']
+    caps=n.get('status',{}).get('capacity',{})
+    print(f'{name}: gpu={caps.get(\"nvidia.com/gpu\",\"0\")} cpu={caps.get(\"cpu\",\"?\")} mem={caps.get(\"memory\",\"?\")}')
+"
           echo "=== Pods ===" && kubectl get pods -n ns-mzyybqj8
           echo "=== Ingress ===" && kubectl get ingress -n ns-mzyybqj8
           echo "=== Backend ===" && kubectl logs -n ns-mzyybqj8 deployment/video2gauss -c backend --tail=10
