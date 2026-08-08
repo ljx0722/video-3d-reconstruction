@@ -264,24 +264,59 @@ def process_video(video_path: str, settings: dict) -> str:
         confs = np.concatenate(all_conf_list, axis=0)
         logger.info(f"Raw points (keyframes only): {len(vertices)}")
 
-        # ── Winner-take-all voxel merge: keep highest-confidence point per voxel ──
-        voxel_size = 0.008  # 8mm grid
-        vk = np.floor(vertices / voxel_size).astype(np.int64)
-        # Encode voxel key + confidence into dict
-        best: dict = {}  # key -> (ci, pi, ci_float)
-        for i in range(len(vertices)):
-            k = (vk[i, 0], vk[i, 1], vk[i, 2])
-            ci = float(confs[i])
-            if k not in best or ci > best[k][0]:
-                best[k] = (ci, i)
+        # ── Scene-adaptive deduplication (works for any video/scale) ─────
+        # 1. Compute scene extent to determine adaptive merge radius
+        bbox_min = vertices.min(axis=0)
+        bbox_max = vertices.max(axis=0)
+        scene_diagonal = float(np.linalg.norm(bbox_max - bbox_min))
+        # Adaptive radius: 0.2% of scene diagonal, clamped to [2mm, 5cm]
+        adaptive_radius = max(0.002, min(0.05, scene_diagonal * 0.002))
+        logger.info(f"Scene diagonal: {scene_diagonal:.2f}m → merge radius: {adaptive_radius*1000:.1f}mm")
 
-        n_merged = len(best)
-        indices = [v[1] for v in best.values()]
-        vertices = vertices[indices]
-        colors = colors[indices]
-        logger.info(f"After winner-take-all voxel merge (8mm): {len(vertices)} points")
+        # 2. Use KD-tree radius search: for each point, find all neighbors within
+        #    adaptive_radius, then keep ONLY the most confident one among them.
+        try:
+            from scipy.spatial import cKDTree
+            tree = cKDTree(vertices)
+            # Query all neighbor indices within radius (memory-efficient batch)
+            pairs = tree.query_ball_tree(tree, adaptive_radius)
+            keep_mask = np.ones(len(vertices), dtype=bool)
+            for i in range(len(vertices)):
+                if not keep_mask[i]:
+                    continue
+                # Among all neighbors, keep only the one with highest confidence
+                neighbors = pairs[i]
+                if len(neighbors) > 1:
+                    best_idx = i
+                    best_conf = confs[i]
+                    for j in neighbors:
+                        if confs[j] > best_conf:
+                            best_conf = confs[j]
+                            best_idx = j
+                    # Mark all others in this group for removal
+                    for j in neighbors:
+                        if j != best_idx:
+                            keep_mask[j] = False
+            before_merge = len(vertices)
+            vertices = vertices[keep_mask]
+            colors = colors[keep_mask]
+            logger.info(f"After adaptive radius merge ({adaptive_radius*1000:.1f}mm): {before_merge} → {len(vertices)} points")
+        except ImportError:
+            # Fallback: simple voxel-based merge
+            voxel_size = max(adaptive_radius, 0.005)
+            vk = np.floor(vertices / voxel_size).astype(np.int64)
+            best: dict = {}
+            for i in range(len(vertices)):
+                k = (vk[i, 0], vk[i, 1], vk[i, 2])
+                ci = float(confs[i])
+                if k not in best or ci > best[k][0]:
+                    best[k] = (ci, i)
+            indices = [v[1] for v in best.values()]
+            vertices = vertices[indices]
+            colors = colors[indices]
+            logger.info(f"After voxel merge ({voxel_size*1000:.1f}mm): {len(vertices)} points")
 
-        # Cap
+        # Cap for browser rendering
         if len(vertices) > 800000:
             idx = np.random.choice(len(vertices), 800000, replace=False)
             vertices = vertices[idx]; colors = colors[idx]
