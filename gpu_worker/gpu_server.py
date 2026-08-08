@@ -173,55 +173,61 @@ def process_video(video_path: str, settings: dict) -> str:
     # Compute world_points_from_depth (needed for GLB export)
     if "world_points" not in predictions and "depth" in predictions:
         logger.info("Computing world_points_from_depth...")
-        depth_t = predictions["depth"].clone()  # (B, S, H, W, 1)
+        depth_t = predictions["depth"]  # (B, S, H, W, 1) or (S, H, W, 1)
         if depth_t.ndim == 5:
-            depth_t = depth_t[0]  # (S, H, W, 1)
+            depth_t = depth_t[0]
         S, H, W = depth_t.shape[0], depth_t.shape[1], depth_t.shape[2]
 
-        # Get intrinsics
+        # Get intrinsics and extrinsics
         intr = predictions["intrinsic"]
-        if intr.ndim == 4:
-            intr = intr[0]  # (S, 3, 3)
-
-        # Get extrinsics (c2w)
+        if intr.ndim == 4: intr = intr[0]
         ext_t = predictions["extrinsic"]
-        if ext_t.ndim == 4:
-            ext_t = ext_t[0]  # (S, 3, 4)
+        if ext_t.ndim == 4: ext_t = ext_t[0]
 
-        world_pts = []
+        # Spatial downsample: process every 3rd pixel
+        skip = 3
+        h_ds, w_ds = H // skip, W // skip
+
+        world_pts_dense = []
         for si in range(S):
-            d = depth_t[si, :, :, 0]  # (H, W)
+            d = depth_t[si, ::skip, ::skip, 0]  # (h_ds, w_ds)
             fx = intr[si, 0, 0].item()
             fy = intr[si, 1, 1].item()
             ppx = intr[si, 0, 2].item()
             ppy = intr[si, 1, 2].item()
 
-            # Create pixel grid
             yy, xx = torch.meshgrid(
-                torch.arange(H, device=depth_t.device),
-                torch.arange(W, device=depth_t.device),
+                torch.arange(h_ds, device=depth_t.device),
+                torch.arange(w_ds, device=depth_t.device),
                 indexing="ij",
             )
-            xx = xx.float()
-            yy = yy.float()
+            px = xx.float() * skip + skip / 2  # center of skipped block
+            py = yy.float() * skip + skip / 2
 
-            # Camera-space coordinates
             z = d
-            x = (xx - ppx) * z / fx
-            y = (yy - ppy) * z / fy
+            # Remove invalid depths (sky -> very large, noise -> very small)
+            valid = (z > 0.05) & (z < 100.0)
+            z = torch.where(valid, z, torch.zeros_like(z))
 
-            # Stack
-            pts_cam = torch.stack([x, y, z], dim=-1).reshape(-1, 3)  # (H*W, 3)
+            x = (px - ppx) * z / fx
+            y = (py - ppy) * z / fy
 
-            # Transform to world using extrinsics (c2w)
-            R = ext_t[si, :, :3]  # (3, 3)
-            T = ext_t[si, :, 3]   # (3,)
-            pts_w = pts_cam @ R.T + T
+            pts_cam = torch.stack([x, y, z], dim=-1)  # (h_ds, w_ds, 3)
 
-            world_pts.append(pts_w.reshape(H, W, 3))
+            R = ext_t[si, :, :3]
+            T = ext_t[si, :, 3]
+            pts_w = pts_cam.reshape(-1, 3) @ R.T + T
+            world_pts_dense.append(pts_w.reshape(h_ds, w_ds, 3))
 
-        predictions["world_points_from_depth"] = torch.stack(world_pts, dim=0).unsqueeze(0)  # (1, S, H, W, 3)
-        logger.info("world_points_from_depth computed")
+        # Stack: (S, h_ds, w_ds, 3) → (1, S, h_ds, w_ds, 3)
+        predictions["world_points_from_depth"] = torch.stack(world_pts_dense, dim=0).unsqueeze(0)
+        predictions["depth_conf"] = depth_t[:, ::skip, ::skip]  # Downsampled confidence
+        # Downsample images to match
+        images_ds = images[:, ::skip, ::skip, :] if images.ndim == 5 else images[::skip, ::skip, :]
+        if images_ds.ndim == 4 and images.ndim == 5:
+            images_ds = images_ds.unsqueeze(0)
+        predictions["images"] = images_ds
+        logger.info(f"world_points_from_depth: {S} frames @ {h_ds}x{w_ds}")
 
     # Move to CPU and convert to numpy
     vis_pred = {}
@@ -236,7 +242,10 @@ def process_video(video_path: str, settings: dict) -> str:
         else:
             vis_pred[k] = v
 
-    imgs_np = images.cpu().numpy()
+    # Downsample images to match world_points_from_depth resolution (skip=3)
+    imgs_t = images  # (B, S, 3, H, W) or (S, 3, H, W)
+    imgs_ds = imgs_t[..., ::3, ::3]  # spatial downsample
+    imgs_np = imgs_ds.cpu().numpy()
     if imgs_np.ndim >= 4 and imgs_np.shape[0] == 1:
         imgs_np = imgs_np[0]
     vis_pred["images"] = imgs_np
@@ -245,11 +254,11 @@ def process_video(video_path: str, settings: dict) -> str:
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
 
-    # Export GLB (with downsampling to keep file size reasonable)
+    # Export GLB with high confidence filtering for manageable size
     from lingbot_map.vis.glb_export import predictions_to_glb
 
-    # Downsample frames to ~60 keyframes for good quality while keeping file manageable
-    step = max(1, num_frames // 60)
+    # Keep ~40 keyframes, high conf filter for clean points
+    step = max(1, num_frames // 40)
     vis_pred_filtered = {}
     for k, v in vis_pred.items():
         if isinstance(v, np.ndarray) and v.ndim >= 3 and v.shape[0] == num_frames:
@@ -257,10 +266,13 @@ def process_video(video_path: str, settings: dict) -> str:
         else:
             vis_pred_filtered[k] = v
     num_frames_filtered = num_frames // step
-    logger.info(f"Vis frames downsampled: {num_frames} -> {num_frames_filtered}")
+    logger.info(f"Vis frames: {num_frames} -> {num_frames_filtered}")
 
     glb_path = os.path.join(tmpdir, "output.glb")
-    scene = predictions_to_glb(vis_pred_filtered, conf_thres=max(conf_threshold, 20), show_cam=True, mask_sky=False)
+    scene = predictions_to_glb(vis_pred_filtered,
+                               conf_thres=90,  # keep top 10% most confident points
+                               show_cam=False,  # skip camera frustums
+                               mask_sky=False)
     scene.export(glb_path)
 
     size_mb = os.path.getsize(glb_path) / (1024 * 1024)
