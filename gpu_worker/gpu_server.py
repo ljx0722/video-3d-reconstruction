@@ -173,53 +173,52 @@ def process_video(video_path: str, settings: dict) -> str:
     # Compute world_points_from_depth (needed for GLB export)
     if "world_points" not in predictions and "depth" in predictions:
         logger.info("Computing world_points_from_depth...")
-        depth_t = predictions["depth"]  # (B, S, H, W, 1) or (S, H, W, 1)
+        depth_t = predictions["depth"]
         if depth_t.ndim == 5:
-            depth_t = depth_t[0]
-        S, H, W = depth_t.shape[0], depth_t.shape[1], depth_t.shape[2]
+            depth_t = depth_t[0]  # (S, H, W, 1)
+        S = depth_t.shape[0]
 
-        # Get intrinsics and extrinsics
         intr = predictions["intrinsic"]
         if intr.ndim == 4: intr = intr[0]
         ext_t = predictions["extrinsic"]
         if ext_t.ndim == 4: ext_t = ext_t[0]
 
-        # Spatial downsample: process every 3rd pixel
+        # Subsampled resolution
         skip = 3
-        h_ds, w_ds = H // skip, W // skip
 
         world_pts_dense = []
         for si in range(S):
-            d = depth_t[si, ::skip, ::skip, 0]  # (h_ds, w_ds)
+            d = depth_t[si, ::skip, ::skip, 0]  # actual shape (h_act, w_act)
+            h_act, w_act = d.shape
             fx = intr[si, 0, 0].item()
             fy = intr[si, 1, 1].item()
             ppx = intr[si, 0, 2].item()
             ppy = intr[si, 1, 2].item()
 
             yy, xx = torch.meshgrid(
-                torch.arange(h_ds, device=depth_t.device),
-                torch.arange(w_ds, device=depth_t.device),
+                torch.arange(h_act, device=depth_t.device),
+                torch.arange(w_act, device=depth_t.device),
                 indexing="ij",
             )
-            px = xx.float() * skip + skip / 2  # center of skipped block
+            px = xx.float() * skip + skip / 2
             py = yy.float() * skip + skip / 2
 
             z = d
-            # Remove invalid depths (sky -> very large, noise -> very small)
-            valid = (z > 0.05) & (z < 100.0)
+            valid = z > 0.05
             z = torch.where(valid, z, torch.zeros_like(z))
 
             x = (px - ppx) * z / fx
             y = (py - ppy) * z / fy
 
-            pts_cam = torch.stack([x, y, z], dim=-1)  # (h_ds, w_ds, 3)
-
+            pts_cam = torch.stack([x, y, z], dim=-1)
             R = ext_t[si, :, :3]
             T = ext_t[si, :, 3]
             pts_w = pts_cam.reshape(-1, 3) @ R.T + T
-            world_pts_dense.append(pts_w.reshape(h_ds, w_ds, 3))
+            world_pts_dense.append(pts_w.reshape(h_act, w_act, 3))
 
-        # Stack: (S, h_ds, w_ds, 3) → (1, S, h_ds, w_ds, 3)
+        predictions["world_points_from_depth"] = torch.stack(world_pts_dense, dim=0).unsqueeze(0)
+        predictions["depth_conf"] = depth_t[:, ::skip, ::skip, 0]
+        logger.info(f"world_points_from_depth computed: {S}x{h_act}x{w_act}")
         predictions["world_points_from_depth"] = torch.stack(world_pts_dense, dim=0).unsqueeze(0)
         predictions["depth_conf"] = depth_t[:, ::skip, ::skip]  # Downsampled confidence
         # Downsample images to match
@@ -242,37 +241,75 @@ def process_video(video_path: str, settings: dict) -> str:
         else:
             vis_pred[k] = v
 
-    # Downsample images to match world_points_from_depth resolution (skip=3)
+    # Downsample images to match world_points spatial resolution
+    # world_points at skip=3: (S, 173, 126, 3)
+    # images currently at full res: (S, 3, 518, 378) or (S, 518, 378, 3)
     imgs_t = images  # (B, S, 3, H, W) or (S, 3, H, W)
-    imgs_ds = imgs_t[..., ::3, ::3]  # spatial downsample
-    imgs_np = imgs_ds.cpu().numpy()
-    if imgs_np.ndim >= 4 and imgs_np.shape[0] == 1:
-        imgs_np = imgs_np[0]
-    vis_pred["images"] = imgs_np
+    if imgs_t.ndim == 5 and imgs_t.shape[0] == 1:
+        imgs_t = imgs_t[0]
+    # images format: (S, 3, H, W)
+    if imgs_t.shape[1] == 3:
+        imgs_np = imgs_t.cpu().numpy()  # (S, 3, 518, 378)
+    else:
+        # (S, H, W, 3) -> (S, 3, H, W)
+        imgs_np = imgs_t.permute(0, 3, 1, 2).cpu().numpy()
+    vis_pred["images"] = imgs_np  # keep full-res, we'll resize when building GLB
 
     del images, predictions
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
 
-    # Export GLB with high confidence filtering for manageable size
-    from lingbot_map.vis.glb_export import predictions_to_glb
+    # Build GLB directly with trimesh — much faster & smaller than predictions_to_glb
+    import trimesh
 
-    # Keep ~40 keyframes, high conf filter for clean points
-    step = max(1, num_frames // 40)
-    vis_pred_filtered = {}
-    for k, v in vis_pred.items():
-        if isinstance(v, np.ndarray) and v.ndim >= 3 and v.shape[0] == num_frames:
-            vis_pred_filtered[k] = v[::step]
-        else:
-            vis_pred_filtered[k] = v
-    num_frames_filtered = num_frames // step
-    logger.info(f"Vis frames: {num_frames} -> {num_frames_filtered}")
+    # Take ~50 evenly-spaced keyframes
+    step = max(1, num_frames // 50)
+    indices = list(range(0, num_frames, step))
+    all_vertices = []
+    all_colors = []
+
+    for fi in indices:
+        # world points for this frame: (H, W, 3)
+        pts_w = vis_pred["world_points_from_depth"][fi]  # numpy (h_ds, w_ds, 3)
+        # Colors from images
+        img = vis_pred["images"]  # (S, 3, H, W)
+        img_f = img[fi].transpose(1, 2, 0)  # (H, W, 3) -> now at full res
+        # Resize image to match downsized points
+        from PIL import Image
+        pil_img = Image.fromarray((img_f * 255).astype('uint8'))
+        pil_img = pil_img.resize((pts_w.shape[1], pts_w.shape[0]), Image.LANCZOS)
+        colors = np.array(pil_img).reshape(-1, 3)
+
+        verts = pts_w.reshape(-1, 3)
+        # Filter zero-depth points
+        valid = (verts[:, 2] > 0.01) & (verts[:, 2] < 100)
+        verts = verts[valid]
+        cols = colors[valid]
+
+        if len(verts) > 0:
+            all_vertices.append(verts)
+            all_colors.append(cols)
+
+    if not all_vertices:
+        raise ValueError("No valid points after filtering")
+
+    vertices = np.concatenate(all_vertices, axis=0)
+    colors = np.concatenate(all_colors, axis=0)
+
+    # Cap at 500K points for smooth browser rendering
+    if len(vertices) > 500000:
+        idx = np.random.choice(len(vertices), 500000, replace=False)
+        vertices = vertices[idx]
+        colors = colors[idx]
+
+    scene = trimesh.Scene()
+    pc = trimesh.PointCloud(vertices=vertices, colors=colors)
+    scene.add_geometry(pc)
+    centroid = vertices.mean(axis=0)
+    scene.apply_translation(-centroid)
 
     glb_path = os.path.join(tmpdir, "output.glb")
-    scene = predictions_to_glb(vis_pred_filtered,
-                               conf_thres=90,  # keep top 10% most confident points
-                               show_cam=False,  # skip camera frustums
-                               mask_sky=False)
+    scene.export(glb_path)
     scene.export(glb_path)
 
     size_mb = os.path.getsize(glb_path) / (1024 * 1024)
