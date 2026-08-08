@@ -1,0 +1,58 @@
+const API_BASE = '/api/v1';
+
+async function request<T>(path: string, options?: RequestInit): Promise<T> {
+  const res = await fetch(`${API_BASE}${path}`, {
+    headers: { 'Content-Type': 'application/json' },
+    ...options,
+  });
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error(body.detail || `Request failed: ${res.status}`);
+  }
+  return res.json();
+}
+
+export async function createJob(settings: { fps: number; mode: string; conf_threshold: number }) {
+  return request<{ id: string }>('/jobs', {
+    method: 'POST',
+    body: JSON.stringify(settings),
+  });
+}
+
+export async function uploadVideo(file: File, settings: { fps: number; mode: string; conf_threshold: number }, onProgress?: (pct: number) => void): Promise<{ id: string }> {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open('POST', `${API_BASE}/jobs/upload`);
+    xhr.upload.onprogress = (e) => {
+      if (e.lengthComputable) onProgress?.(Math.round((e.loaded / e.total) * 100));
+    };
+    xhr.onload = () => {
+      if (xhr.status >= 200 && xhr.status < 300) {
+        resolve(JSON.parse(xhr.responseText));
+      } else {
+        try { reject(new Error(JSON.parse(xhr.responseText).detail)); } catch { reject(new Error('Upload failed')); }
+      }
+    };
+    xhr.onerror = () => reject(new Error('Network error'));
+    const form = new FormData();
+    form.append('file', file);
+    form.append('settings', JSON.stringify(settings));
+    xhr.send(form);
+  });
+}
+
+export function listJobs() {
+  return request<any[]>('/jobs');
+}
+
+export function getJob(id: string) {
+  return request<any>(`/jobs/${id}`);
+}
+
+export function deleteJob(id: string) {
+  return request<void>(`/jobs/${id}`, { method: 'DELETE' });
+}
+
+export function getResultUrl(jobId: string) {
+  return `/files/${jobId}/result.glb`;
+}

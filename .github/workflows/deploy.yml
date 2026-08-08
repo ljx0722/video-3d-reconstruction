@@ -1,0 +1,119 @@
+name: Build and Deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: video2gauss-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  REGISTRY: ghcr.io
+  REPO: ljx0722/video-3d-reconstruction
+
+jobs:
+  build-frontend:
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: ./frontend
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.REPO }}-frontend:latest
+            ${{ env.REGISTRY }}/${{ env.REPO }}-frontend:sha-${{ github.sha }}
+
+  build-backend:
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: ./backend
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.REPO }}-backend:latest
+            ${{ env.REGISTRY }}/${{ env.REPO }}-backend:sha-${{ github.sha }}
+
+  build-gpu-worker:
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: ./gpu_worker
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.REPO }}-gpu-worker:latest
+            ${{ env.REGISTRY }}/${{ env.REPO }}-gpu-worker:sha-${{ github.sha }}
+
+  deploy:
+    needs: [build-frontend, build-backend, build-gpu-worker]
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/setup-kubectl@v4
+        with:
+          version: latest
+      - name: Configure cluster
+        run: |
+          mkdir -p ~/.kube
+          echo "${{ secrets.SEALOS_KUBECONFIG }}" | base64 -d > ~/.kube/config
+      - name: Apply deployments
+        run: |
+          kubectl apply -f deploy/sealos/ -n ns-mzyybqj8
+      - name: Update images
+        run: |
+          kubectl set image deployment/frontend -n ns-mzyybqj8 \
+            frontend=${{ env.REGISTRY }}/${{ env.REPO }}-frontend:sha-${{ github.sha }}
+          kubectl set image deployment/backend -n ns-mzyybqj8 \
+            backend=${{ env.REGISTRY }}/${{ env.REPO }}-backend:sha-${{ github.sha }}
+      - name: Wait for rollout
+        run: |
+          kubectl rollout status deployment/frontend -n ns-mzyybqj8 --timeout=120s
+          kubectl rollout status deployment/backend -n ns-mzyybqj8 --timeout=120s
+      - name: Smoke test
+        run: |
+          kubectl get pods -n ns-mzyybqj8 -o wide
+          kubectl logs -n ns-mzyybqj8 deployment/backend --tail=50 || true
