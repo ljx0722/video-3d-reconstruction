@@ -217,8 +217,8 @@ def process_video(video_path: str, settings: dict) -> str:
 
         S, H, W = depth.shape[0], depth.shape[1], depth.shape[2]
 
-        # Take ~15 well-spaced keyframes to avoid massive overlap
-        keyframe_step = max(1, S // 15)
+        # Take ~25 well-spaced keyframes to avoid massive overlap
+        keyframe_step = max(1, S // 25)
         keyframe_idx = list(range(0, S, keyframe_step))
         n_keyframes = len(keyframe_idx)
         logger.info(f"Keyframes: {S} -> {n_keyframes}")
@@ -258,7 +258,7 @@ def process_video(video_path: str, settings: dict) -> str:
                 cf = depth_conf[fi]
                 # Only take the most confident 50% of pixels this frame
                 cf_flat = cf.reshape(-1)
-                cf_thres = np.percentile(cf_flat[cf_flat > 0], 50)
+                cf_thres = np.percentile(cf_flat[cf_flat > 0], 30)  # keep top 70%
                 valid = (z > 0.05) & (z < 80) & (cf > cf_thres)
             else:
                 valid = (z > 0.05) & (z < 80)
@@ -271,7 +271,7 @@ def process_video(video_path: str, settings: dict) -> str:
         logger.info(f"Raw points (keyframes only): {len(vertices)}")
 
         # ── Voxel grid merge: deduplicate overlapping points ────────────
-        voxel_size = 0.02  # 2cm voxels
+        voxel_size = 0.003  # 3mm voxels: merge truly overlapping points only
         vk = np.floor(vertices / voxel_size).astype(np.int32)
         merged: dict = {}
         for i in range(len(vertices)):
@@ -293,12 +293,12 @@ def process_video(video_path: str, settings: dict) -> str:
         colors = colors_final
         logger.info(f"After voxel merge: {len(vertices)} points")
 
-        # Cap at 500K points for smooth browsing
-        if len(vertices) > 500000:
-            idx = np.random.choice(len(vertices), 500000, replace=False)
+        # Cap at 1M points for smooth browsing
+        if len(vertices) > 1000000:
+            idx = np.random.choice(len(vertices), 1000000, replace=False)
             vertices = vertices[idx]
             colors = colors[idx]
-            logger.info(f"Capped to 500K points")
+            logger.info(f"Capped to 1M points")
 
     # ── Export GLB via trimesh (clean, single PointCloud) ───────────────
     glb_path = os.path.join(tmpdir, "output.glb")
