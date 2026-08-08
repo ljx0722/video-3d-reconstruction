@@ -209,101 +209,123 @@ def process_video(video_path: str, settings: dict) -> str:
 
     # ── Compute world_points_from_depth (standard method) ───────────────
     if "world_points" not in vis_pred:
-        logger.info("Computing world_points_from_depth (standard method)...")
-        depth = vis_pred["depth"]  # (S, H, W, 1)
-        extrinsics = vis_pred["extrinsic"]  # (S, 3, 4) c2w
-        intrinsics = vis_pred.get("intrinsic", None)
-        if intrinsics is None:
-            raise ValueError("Missing intrinsics for depth projection")
+        logger.info("Computing world_points_from_depth...")
+        depth = vis_pred["depth"]
+        extrinsics = vis_pred["extrinsic"]
+        intrinsics = vis_pred.get("intrinsic")
+        depth_conf = vis_pred.get("depth_conf")
 
         S, H, W = depth.shape[0], depth.shape[1], depth.shape[2]
-        logger.info(f"depth shape: {depth.shape}, extrinsic: {extrinsics.shape}")
 
-        world_pts = np.zeros((S, H, W, 3), dtype=np.float32)
-        for si in range(S):
-            ext = extrinsics[si]  # (3, 4) c2w
-            R = ext[:, :3]  # (3, 3)
-            T = ext[:, 3]   # (3,)
-            d = depth[si, :, :, 0]  # (H, W)
+        # Take ~15 well-spaced keyframes to avoid massive overlap
+        keyframe_step = max(1, S // 15)
+        keyframe_idx = list(range(0, S, keyframe_step))
+        n_keyframes = len(keyframe_idx)
+        logger.info(f"Keyframes: {S} -> {n_keyframes}")
 
-            # Get intrinsics for this frame
+        all_world_pts = []
+        all_colors_list = []
+
+        for fi in keyframe_idx:
+            ext = extrinsics[fi]
+            R, T = ext[:, :3], ext[:, 3]
+            d = depth[fi, :, :, 0]
+
             if intrinsics.ndim >= 3:
-                intr = intrinsics[si]  # (3, 3) per frame
+                intr = intrinsics[fi]
             else:
                 intr = intrinsics
 
-            fx = intr[0, 0]
-            fy = intr[1, 1]
-            cx = intr[0, 2]
-            cy = intr[1, 2]
+            fx, fy = intr[0, 0], intr[1, 1]
+            cx, cy = intr[0, 2], intr[1, 2]
 
-            # Create pixel grid
             yy, xx = np.mgrid[0:H, 0:W]
-            # Camera coordinates
             z = d
             x_cam = (xx - cx) * z / fx
             y_cam = (yy - cy) * z / fy
-
-            # Transform to world: P_world = R @ P_cam + T
-            # (H, W, 3) @ (3, 3).T + (3,) = (H, W, 3)
-            pts_cam = np.stack([x_cam, y_cam, z], axis=-1)  # (H, W, 3)
+            pts_cam = np.stack([x_cam, y_cam, z], axis=-1)
             pts_w = pts_cam @ R.T + T
-            world_pts[si] = pts_w
 
-        vis_pred["world_points_from_depth"] = world_pts
-        logger.info(f"world_points_from_depth: {S}x{H}x{W}")
-
-    # ── Spatial subsample for manageable GLB size ────────────────────────
-    skip_spatial = 2  # 2x spatial downsample: 294x518 -> 147x259 per frame
-    vis_pred_sub = {}
-    for k, v in vis_pred.items():
-        if k == "depth" and v.ndim >= 4:
-            vis_pred_sub[k] = v[:, ::skip_spatial, ::skip_spatial]
-        elif k == "depth_conf" and v is not None and v.ndim >= 3:
-            vis_pred_sub[k] = v[:, ::skip_spatial, ::skip_spatial]
-        elif k == "world_points_from_depth" and v.ndim >= 4:
-            vis_pred_sub[k] = v[:, ::skip_spatial, ::skip_spatial]
-        elif k == "images" and v.ndim >= 4:
-            if v.shape[1] == 3:  # (S, 3, H, W)
-                vis_pred_sub[k] = v[:, :, ::skip_spatial, ::skip_spatial]
+            # Get colors from this frame's image
+            img = vis_pred["images"]
+            if img.shape[1] == 3:
+                img_f = img[fi].transpose(1, 2, 0)
             else:
-                vis_pred_sub[k] = v[:, ::skip_spatial, ::skip_spatial]
-        else:
-            vis_pred_sub[k] = v
-    num_frames_sub = vis_pred_sub.get("depth", vis_pred.get("depth")).shape[0]
-    logger.info(f"Spatial subsample: {num_frames_sub} frames -> {num_frames_sub//2 if num_frames_sub > 40 else num_frames_sub}")
+                img_f = img[fi]
 
-    # ── Temporal subsample: ~30 keyframes ───────────────────────────────
-    step = max(1, num_frames_sub // 30)
-    vis_pred_final = {}
-    for k, v in vis_pred_sub.items():
-        if isinstance(v, np.ndarray) and v.ndim >= 3 and v.shape[0] == num_frames_sub:
-            vis_pred_final[k] = v[::step]
-        else:
-            vis_pred_final[k] = v
-    nf = num_frames_sub // step
-    logger.info(f"Temporal subsample: {num_frames_sub} -> {nf} frames")
+            # Confidence filter per-pixel
+            if depth_conf is not None:
+                cf = depth_conf[fi]
+                # Only take the most confident 50% of pixels this frame
+                cf_flat = cf.reshape(-1)
+                cf_thres = np.percentile(cf_flat[cf_flat > 0], 50)
+                valid = (z > 0.05) & (z < 80) & (cf > cf_thres)
+            else:
+                valid = (z > 0.05) & (z < 80)
 
-    # ── Export GLB via official lingbot-map function ─────────────────────
-    from lingbot_map.vis.glb_export import predictions_to_glb
+            all_world_pts.append(pts_w[valid])
+            all_colors_list.append((img_f[valid] * 255).astype(np.uint8))
 
+        vertices = np.concatenate(all_world_pts, axis=0)
+        colors = np.concatenate(all_colors_list, axis=0)
+        logger.info(f"Raw points (keyframes only): {len(vertices)}")
+
+        # ── Voxel grid merge: deduplicate overlapping points ────────────
+        voxel_size = 0.02  # 2cm voxels
+        vk = np.floor(vertices / voxel_size).astype(np.int32)
+        merged: dict = {}
+        for i in range(len(vertices)):
+            k = (vk[i, 0], vk[i, 1], vk[i, 2])
+            if k not in merged:
+                merged[k] = {"p": [0.0, 0.0, 0.0], "c": [0.0, 0.0, 0.0], "n": 0}
+            v = merged[k]
+            v["p"][0] += float(vertices[i, 0]); v["p"][1] += float(vertices[i, 1]); v["p"][2] += float(vertices[i, 2])
+            v["c"][0] += float(colors[i, 0]); v["c"][1] += float(colors[i, 1]); v["c"][2] += float(colors[i, 2])
+            v["n"] += 1
+
+        n_merged = len(merged)
+        vertices_final = np.zeros((n_merged, 3), dtype=np.float32)
+        colors_final = np.zeros((n_merged, 3), dtype=np.float32)
+        for i, v in enumerate(merged.values()):
+            vertices_final[i] = [v["p"][0]/v["n"], v["p"][1]/v["n"], v["p"][2]/v["n"]]
+            colors_final[i] = [v["c"][0]/v["n"], v["c"][1]/v["n"], v["c"][2]/v["n"]]
+        vertices = vertices_final
+        colors = colors_final
+        logger.info(f"After voxel merge: {len(vertices)} points")
+
+        # Cap at 500K points for smooth browsing
+        if len(vertices) > 500000:
+            idx = np.random.choice(len(vertices), 500000, replace=False)
+            vertices = vertices[idx]
+            colors = colors[idx]
+            logger.info(f"Capped to 500K points")
+
+    # ── Export GLB via trimesh (clean, single PointCloud) ───────────────
     glb_path = os.path.join(tmpdir, "output.glb")
-    scene = predictions_to_glb(
-        vis_pred_final,
-        conf_thres=30,   # moderate confidence filtering
-        show_cam=True,
-        mask_sky=False,
-    )
+    scene = trimesh.Scene()
+    pc = trimesh.PointCloud(vertices=vertices, colors=colors.astype(np.uint8))
+    scene.add_geometry(pc)
+    centroid = vertices.mean(axis=0)
+    scene.apply_translation(-centroid)
 
-    # Apply scene alignment (same as glb_export.apply_scene_alignment)
-    num_cameras_sub = len(vis_pred_final["extrinsic"])
-    ext_matrices = np.zeros((num_cameras_sub, 4, 4))
-    ext_matrices[:, :3, :4] = vis_pred_final["extrinsic"]
-    ext_matrices[:, 3, 3] = 1
+    # Add camera trail as small spheres
+    if len(keyframe_idx) > 1:
+        cam_positions = []
+        for fi in keyframe_idx:
+            ext = extrinsics[fi]
+            cam_positions.append(ext[:, 3])
+        cam_arr = np.array(cam_positions)
+        cam_arr_centered = cam_arr - centroid
+        for i, cp in enumerate(cam_arr_centered):
+            s = trimesh.creation.icosphere(subdivisions=2, radius=0.01)
+            t = i / (len(cam_arr_centered) - 1)
+            s.visual.vertex_colors = np.tile([int(255*(1-t)), 40, int(255*t)], (len(s.vertices), 1)).astype(np.uint8)
+            s.apply_translation(cp.tolist())
+            scene.add_geometry(s)
 
     scene.export(glb_path)
     size_mb = os.path.getsize(glb_path) / (1024 * 1024)
-    logger.info(f"GLB exported: {size_mb:.1f} MB, {num_frames} frames, elapsed={elapsed:.1f}s")
+    logger.info(f"GLB exported: {size_mb:.1f} MB, {n_keyframes} keyframes, elapsed={elapsed:.1f}s")
 
     return glb_path
 
