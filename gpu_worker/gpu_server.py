@@ -226,7 +226,7 @@ def process_video(video_path: str, settings: dict) -> str:
         if images_ds.ndim == 4 and images.ndim == 5:
             images_ds = images_ds.unsqueeze(0)
         predictions["images"] = images_ds
-        logger.info(f"world_points_from_depth: {S} frames @ {h_ds}x{w_ds}")
+        logger.info(f"world_points_from_depth: {S} frames")
 
     # Move to CPU and convert to numpy
     vis_pred = {}
@@ -270,7 +270,7 @@ def process_video(video_path: str, settings: dict) -> str:
 
     for fi in indices:
         # world points for this frame: (H, W, 3)
-        pts_w = vis_pred["world_points_from_depth"][fi]  # numpy (h_ds, w_ds, 3)
+        pts_w = vis_pred["world_points_from_depth"][fi]  # numpy (H, W, 3)
         # Colors from images
         img = vis_pred["images"]  # (S, 3, H, W)
         img_f = img[fi].transpose(1, 2, 0)  # (H, W, 3) -> now at full res
