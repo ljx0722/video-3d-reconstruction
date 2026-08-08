@@ -3,7 +3,8 @@ import json
 import logging
 import glob as _glob
 from fastapi import APIRouter, UploadFile, File, HTTPException, Body, Request
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, PlainTextResponse
+import aiofiles
 from sqlalchemy import select
 from app.database import async_session
 from app.models.job import Job
@@ -58,17 +59,25 @@ async def update_status(job_id: str, data: dict = Body(...)):
 
 
 @router.post("/result/{job_id}")
-async def upload_result(
-    job_id: str,
-    file: UploadFile = File(...),
-):
-    glb_data = await file.read()
+async def upload_result_raw(job_id: str, request: Request):
+    """Accept raw binary GLB upload (used by GPU worker for large files)."""
+    content_type = request.headers.get("content-type", "")
+    if "multipart" in content_type:
+        # Multipart fallback
+        form = await request.form()
+        uploaded = form.get("file")
+        if uploaded:
+            glb_data = await uploaded.read()
+        else:
+            raise HTTPException(status_code=400, detail="No file in multipart")
+    else:
+        glb_data = await request.body()
 
     job_dir = os.path.join(settings.upload_dir, job_id)
     os.makedirs(job_dir, exist_ok=True)
     glb_path = os.path.join(job_dir, "result.glb")
-    with open(glb_path, "wb") as f:
-        f.write(glb_data)
+    async with aiofiles.open(glb_path, "wb") as f:
+        await f.write(glb_data)
 
     import time as _time
     async with async_session() as session:
@@ -80,5 +89,5 @@ async def upload_result(
             job.result_path = f"results/{job_id}/pointcloud.glb"
             await session.commit()
 
-    logger.info(f"GPU result received for job {job_id}: {len(glb_data)/1024/1024:.1f} MB")
+    logger.info(f"GPU result saved for job {job_id}: {len(glb_data)/1024/1024:.1f} MB")
     return {"ok": True}

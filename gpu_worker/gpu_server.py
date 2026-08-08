@@ -347,21 +347,26 @@ def _update_status(job_id: str, status: str, progress: float, error: str = ""):
 
 
 def _upload_result(job_id: str, glb_data: bytes):
-    boundary = "----GPUWorkerUpload"
-    body = (
-        b"--" + boundary.encode() + b"\r\n"
-        b'Content-Disposition: form-data; name="file"; filename="result.glb"\r\n'
-        b"Content-Type: model/gltf-binary\r\n\r\n"
-        + glb_data + b"\r\n"
-        b"--" + boundary.encode() + b"--\r\n"
-    )
-    req = urllib.request.Request(
-        f"{BACKEND_URL}/api/v1/gpu/result/{job_id}",
-        data=body,
-        headers={"Content-Type": f"multipart/form-data; boundary={boundary}", "User-Agent": "gpu-worker/1.0"},
-        method="POST",
-    )
-    urllib.request.urlopen(req, timeout=120)
+    # Upload as raw binary (not multipart) for reliability with large files
+    for attempt in range(3):
+        try:
+            req = urllib.request.Request(
+                f"{BACKEND_URL}/api/v1/gpu/result/{job_id}",
+                data=glb_data,
+                headers={
+                    "Content-Type": "application/octet-stream",
+                    "User-Agent": "gpu-worker/1.0",
+                },
+                method="POST",
+            )
+            urllib.request.urlopen(req, timeout=300)
+            return
+        except Exception as e:
+            if attempt < 2:
+                logger.warning(f"Upload attempt {attempt+1} failed, retrying: {e}")
+                time.sleep(5)
+            else:
+                raise
 
 
 if __name__ == "__main__":
