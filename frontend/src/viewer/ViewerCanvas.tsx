@@ -14,7 +14,6 @@ interface Props {
   clipPlanes?: ClipPlane[];
   boxClip?: BoxClip;
   showAxes?: boolean;
-  bgColor?: 'dark' | 'light';
 }
 
 function ClippingPlanes3D({ clipPlanes, boxClip }: { clipPlanes: ClipPlane[]; boxClip: BoxClip }) {
@@ -91,7 +90,7 @@ function AxesHelper() {
 
 export default function ViewerCanvas({
   jobId, pointSize, opacity = 1, onPointsReady,
-  clipPlanes, boxClip, showAxes, bgColor = 'dark',
+  clipPlanes, boxClip, showAxes,
 }: Props) {
   const defaultClipPlanes: ClipPlane[] = clipPlanes || [
     { axis: 'x', offset: -1.5, enabled: false, negative: false },
@@ -121,10 +120,10 @@ export default function ViewerCanvas({
       className="!absolute inset-0"
       gl={{ preserveDrawingBuffer: true, antialias: true, localClippingEnabled: true }}
       camera={{ position: [2, 1, 3], fov: 50 }}
-      style={{ background: bgColor === 'dark' ? '#0a0a0f' : '#e5e5e5' }}
+      style={{ background: '#0a0a0f' }}
     >
-      <ambientLight intensity={bgColor === 'dark' ? 0.6 : 0.8} />
-      <directionalLight position={[5, 5, 5]} intensity={bgColor === 'dark' ? 0.4 : 0.6} />
+      <ambientLight intensity={0.6} />
+      <directionalLight position={[5, 5, 5]} intensity={0.4} />
 
       <Suspense fallback={null}>
         <ModelLoader

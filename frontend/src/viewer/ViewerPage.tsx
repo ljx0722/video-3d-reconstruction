@@ -4,7 +4,8 @@ import useSWR from 'swr';
 import * as THREE from 'three';
 import { getJob } from '../api/client';
 import ViewerCanvas from './ViewerCanvas';
-import Toolbar, { type ClipPlane, type BoxClip } from './Toolbar';
+import ControlsPanel from './ControlsPanel';
+import { type ClipPlane, type BoxClip } from './Toolbar';
 import type { Job } from '../types';
 
 const POINT_SIZE = 0.008;
@@ -33,7 +34,6 @@ export default function ViewerPage() {
   const [pointSize, setPointSize] = useState(POINT_SIZE);
   const [opacity, setOpacity] = useState(1);
   const [showAxes, setShowAxes] = useState(false);
-  const [bgColor, setBgColor] = useState<'dark' | 'light'>('dark');
 
   // Processing
   const [pointCount, setPointCount] = useState(0);
@@ -299,23 +299,20 @@ export default function ViewerPage() {
             <ViewerCanvas jobId={job.id} pointSize={pointSize} opacity={opacity}
               onPointsReady={handlePointsReady}
               clipPlanes={clipPlanes} boxClip={boxClip}
-              showAxes={showAxes} bgColor={bgColor} />
-            <Toolbar
-              pointSize={pointSize} onPointSizeChange={setPointSize}
-              opacity={opacity} onOpacityChange={setOpacity}
+              showAxes={showAxes} />
+            <ControlsPanel
+              pointSize={pointSize} setPointSize={setPointSize}
+              opacity={opacity} setOpacity={setOpacity}
               pointCount={pointCount} originalCount={originalCount}
               onVoxelDownsample={doVoxelDownsample}
               onOutlierRemove={doOutlierRemove}
               onReset={doReset}
-              measurementMode={measureMode}
-              onToggleMeasure={() => { setMeasureMode(!measureMode); measurePtsRef.current=[]; setDistance(null); }}
-              distance={distance} onClearMeasure={() => { measurePtsRef.current=[]; setDistance(null); }}
-              onResetView={() => {}}
-              clipPlanes={clipPlanes} onClipPlanesChange={setClipPlanes}
-              boxClip={boxClip} onBoxClipChange={setBoxClip}
+              clipPlanes={clipPlanes} setClipPlanes={setClipPlanes}
+              boxClip={boxClip} setBoxClip={setBoxClip}
+              measureMode={measureMode} setMeasureMode={setMeasureMode}
+              distance={distance} clearMeasure={() => { measurePtsRef.current=[]; setDistance(null); }}
               onExport={doExport}
-              showAxes={showAxes} onToggleAxes={() => setShowAxes(!showAxes)}
-              bgColor={bgColor} onBgColorChange={setBgColor}
+              showAxes={showAxes} setShowAxes={setShowAxes}
             />
           </>
         ) : job.status === 'failed' ? (
