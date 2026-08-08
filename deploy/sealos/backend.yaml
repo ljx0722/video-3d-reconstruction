@@ -32,10 +32,7 @@ spec:
             - name: MINIO_BUCKET
               value: "video-3d"
             - name: JWT_SECRET
-              valueFrom:
-                secretKeyRef:
-                  name: app-secrets
-                  key: jwt-secret
+              value: "video3d-jwt-secret-production-change-me"
           resources:
             requests:
               memory: "256Mi"

@@ -118,7 +118,15 @@ jobs:
         run: |
           kubectl rollout status deployment/frontend -n ns-mzyybqj8 --timeout=120s
           kubectl rollout status deployment/backend -n ns-mzyybqj8 --timeout=120s
-      - name: Smoke test
+      - name: Check pod status
         run: |
+          echo "=== Pods ==="
           kubectl get pods -n ns-mzyybqj8 -o wide
+          echo "=== Deployments ==="
+          kubectl get deployments -n ns-mzyybqj8
+          echo "=== Services ==="
+          kubectl get svc -n ns-mzyybqj8
+          echo "=== Backend logs ==="
           kubectl logs -n ns-mzyybqj8 deployment/backend --tail=50 || true
+          echo "=== Frontend logs ==="
+          kubectl logs -n ns-mzyybqj8 deployment/frontend --tail=20 || true
