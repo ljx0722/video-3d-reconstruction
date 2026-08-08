@@ -51,7 +51,7 @@ spec:
     - ReadWriteOnce
   resources:
     requests:
-      storage: 10Gi
+      storage: 5Gi
 ---
 apiVersion: v1
 kind: PersistentVolumeClaim
@@ -63,16 +63,4 @@ spec:
     - ReadWriteOnce
   resources:
     requests:
-      storage: 50Gi
----
-apiVersion: v1
-kind: PersistentVolumeClaim
-metadata:
-  name: model-pvc
-  namespace: ns-mzyybqj8
-spec:
-  accessModes:
-    - ReadWriteOnce
-  resources:
-    requests:
-      storage: 50Gi
+      storage: 10Gi

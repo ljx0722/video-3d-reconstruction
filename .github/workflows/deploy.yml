@@ -102,7 +102,12 @@ jobs:
           echo "${{ secrets.SEALOS_KUBECONFIG }}" | base64 -d > ~/.kube/config
       - name: Apply deployments
         run: |
-          kubectl apply -f deploy/sealos/ -n ns-mzyybqj8
+          kubectl apply -f deploy/sealos/postgres.yaml
+          kubectl apply -f deploy/sealos/redis.yaml
+          kubectl apply -f deploy/sealos/minio.yaml
+          kubectl apply -f deploy/sealos/backend.yaml
+          kubectl apply -f deploy/sealos/frontend.yaml
+          kubectl apply -f deploy/sealos/ingress.yaml
       - name: Update images
         run: |
           kubectl set image deployment/frontend -n ns-mzyybqj8 \
