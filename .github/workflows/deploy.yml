@@ -124,8 +124,16 @@ jobs:
           kubectl get pods -n ns-mzyybqj8 -o wide
           echo "=== Deployments ==="
           kubectl get deployments -n ns-mzyybqj8
-          echo "=== Services ==="
-          kubectl get svc -n ns-mzyybqj8
+          echo "=== PVCs ==="
+          kubectl get pvc -n ns-mzyybqj8
+          echo "=== Events (recent) ==="
+          kubectl get events -n ns-mzyybqj8 --sort-by='.lastTimestamp' | tail -30 || true
+          echo "=== Describe postgres ==="
+          kubectl describe pod -n ns-mzyybqj8 -l app=postgres | tail -30 || true
+          echo "=== Describe redis ==="
+          kubectl describe pod -n ns-mzyybqj8 -l app=redis | tail -20 || true
+          echo "=== Describe minio ==="
+          kubectl describe pod -n ns-mzyybqj8 -l app=minio | tail -20 || true
           echo "=== Backend logs ==="
           kubectl logs -n ns-mzyybqj8 deployment/backend --tail=50 || true
           echo "=== Frontend logs ==="
