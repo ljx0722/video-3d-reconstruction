@@ -21,7 +21,7 @@ logger = logging.getLogger("gpu-worker")
 
 BACKEND_URL = os.environ.get("SEALOS_BACKEND_URL", "https://video2gauss.sealoshzh.site").rstrip("/")
 POLL_INTERVAL = int(os.environ.get("POLL_INTERVAL", "5"))
-CHECKPOINT_PATH = os.environ.get("MODEL_PATH", "./checkpoint/lingbot-map.pt")
+CHECKPOINT_PATH = os.environ.get("MODEL_PATH", "./checkpoint/lingbot-map-long.pt")
 
 # ── Model loading (lazy, loaded on first request) ──────────────────────────
 _model = None
@@ -248,8 +248,8 @@ def process_video(video_path: str, settings: dict) -> str:
     # Export GLB (with downsampling to keep file size reasonable)
     from lingbot_map.vis.glb_export import predictions_to_glb
 
-    # Downsample frames to ~30 keyframes to keep GLB under 200MB
-    step = max(1, num_frames // 30)
+    # Downsample frames to ~60 keyframes for good quality while keeping file manageable
+    step = max(1, num_frames // 60)
     vis_pred_filtered = {}
     for k, v in vis_pred.items():
         if isinstance(v, np.ndarray) and v.ndim >= 3 and v.shape[0] == num_frames:
@@ -260,7 +260,7 @@ def process_video(video_path: str, settings: dict) -> str:
     logger.info(f"Vis frames downsampled: {num_frames} -> {num_frames_filtered}")
 
     glb_path = os.path.join(tmpdir, "output.glb")
-    scene = predictions_to_glb(vis_pred_filtered, conf_thres=max(conf_threshold, 30), show_cam=True, mask_sky=False)
+    scene = predictions_to_glb(vis_pred_filtered, conf_thres=max(conf_threshold, 20), show_cam=True, mask_sky=False)
     scene.export(glb_path)
 
     size_mb = os.path.getsize(glb_path) / (1024 * 1024)
