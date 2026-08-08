@@ -1,0 +1,28 @@
+name: Check Sealos App Schema
+
+on:
+  workflow_dispatch:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: azure/setup-kubectl@v4
+        with:
+          version: latest
+      - name: Config
+        run: |
+          mkdir -p ~/.kube
+          echo "${{ secrets.SEALOS_KUBECONFIG }}" | base64 -d > ~/.kube/config
+      - name: Check
+        run: |
+          echo === App CRD ===
+          kubectl get crd apps.app.sealos.io -o yaml 2>/dev/null | head -200
+          echo === Instance CRD ===
+          kubectl get crd instances.app.sealos.io -o yaml 2>/dev/null | head -200
+          echo === Gesture deployment ===
+          kubectl get deployment gesture-island -n ns-mzyybqj8 -o yaml 2>/dev/null | head -60
+          echo === Our Ingress ===
+          kubectl get ingress video2gauss -n ns-mzyybqj8 -o yaml 2>/dev/null
+          echo === DNS ===
+          nslookup video2gauss.sealoshzh.site 2>/dev/null || echo dns-fail
