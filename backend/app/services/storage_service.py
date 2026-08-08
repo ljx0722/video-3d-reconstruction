@@ -1,46 +1,37 @@
-import io
-import logging
+import os
+import aiofiles
 from app.config import settings
 
-logger = logging.getLogger(__name__)
 
-_minio_client = None
-
-
-def _get_client():
-    global _minio_client
-    if _minio_client is None:
-        from minio import Minio
-        _minio_client = Minio(
-            settings.minio_endpoint,
-            access_key=settings.minio_access_key,
-            secret_key=settings.minio_secret_key,
-            secure=settings.minio_secure,
-        )
-        _ensure_bucket(_minio_client)
-    return _minio_client
+async def save_upload(job_id: str, data: bytes, content_type: str = "video/mp4"):
+    job_dir = os.path.join(settings.upload_dir, job_id)
+    os.makedirs(job_dir, exist_ok=True)
+    ext = ".mp4" if "video" in content_type else ""
+    video_path = os.path.join(job_dir, f"video{ext}")
+    async with aiofiles.open(video_path, "wb") as f:
+        await f.write(data)
+    return video_path
 
 
-def _ensure_bucket(client):
-    import minio.error
-    try:
-        if not client.bucket_exists(settings.minio_bucket):
-            client.make_bucket(settings.minio_bucket)
-    except minio.error.S3Error as e:
-        if e.code != "BucketAlreadyOwnedByYou":
-            raise
+async def save_settings(job_id: str, settings_json: str):
+    job_dir = os.path.join(settings.upload_dir, job_id)
+    os.makedirs(job_dir, exist_ok=True)
+    async with aiofiles.open(os.path.join(job_dir, "settings.json"), "w") as f:
+        await f.write(settings_json)
 
 
-async def upload_bytes(data: bytes, key: str, content_type: str = "application/octet-stream"):
-    client = _get_client()
-    client.put_object(settings.minio_bucket, key, io.BytesIO(data), len(data), content_type=content_type)
+async def save_glb(job_id: str, data: bytes):
+    job_dir = os.path.join(settings.upload_dir, job_id)
+    os.makedirs(job_dir, exist_ok=True)
+    glb_path = os.path.join(job_dir, "result.glb")
+    async with aiofiles.open(glb_path, "wb") as f:
+        await f.write(data)
+    return glb_path
 
 
-async def download_bytes(key: str) -> bytes | None:
-    from minio.error import S3Error
-    client = _get_client()
-    try:
-        response = client.get_object(settings.minio_bucket, key)
-        return response.read()
-    except S3Error:
+async def get_glb(job_id: str) -> bytes | None:
+    glb_path = os.path.join(settings.upload_dir, job_id, "result.glb")
+    if not os.path.exists(glb_path):
         return None
+    async with aiofiles.open(glb_path, "rb") as f:
+        return await f.read()

@@ -20,26 +20,23 @@ spec:
             - containerPort: 8000
           env:
             - name: DATABASE_URL
-              value: "postgresql+asyncpg://v2g:v2gpass@postgres:5432/video2gauss"
-            - name: REDIS_URL
-              value: "redis://redis:6379/0"
-            - name: MINIO_ENDPOINT
-              value: "minio:9000"
-            - name: MINIO_ACCESS_KEY
-              value: "minioadmin"
-            - name: MINIO_SECRET_KEY
-              value: "minioadmin"
-            - name: MINIO_BUCKET
-              value: "video-3d"
-            - name: JWT_SECRET
-              value: "video3d-jwt-secret-production-change-me"
+              value: "sqlite+aiosqlite:///./data/jobs.db"
+            - name: PYTHONUNBUFFERED
+              value: "1"
+          volumeMounts:
+            - name: data
+              mountPath: /app/data
           resources:
             requests:
               memory: "256Mi"
-              cpu: "500m"
+              cpu: "250m"
             limits:
               memory: "512Mi"
               cpu: "1000m"
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: video3d-data-pvc
 ---
 apiVersion: v1
 kind: Service

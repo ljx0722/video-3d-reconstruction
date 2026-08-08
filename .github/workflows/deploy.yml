@@ -20,8 +20,6 @@ jobs:
     permissions:
       contents: read
       packages: write
-    outputs:
-      digest: ${{ steps.build.outputs.digest }}
     steps:
       - uses: actions/checkout@v4
       - uses: docker/login-action@v3
@@ -29,8 +27,7 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - id: build
-        uses: docker/build-push-action@v6
+      - uses: docker/build-push-action@v6
         with:
           context: ./frontend
           push: true
@@ -44,8 +41,6 @@ jobs:
     permissions:
       contents: read
       packages: write
-    outputs:
-      digest: ${{ steps.build.outputs.digest }}
     steps:
       - uses: actions/checkout@v4
       - uses: docker/login-action@v3
@@ -53,38 +48,13 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - id: build
-        uses: docker/build-push-action@v6
+      - uses: docker/build-push-action@v6
         with:
           context: ./backend
           push: true
           tags: |
             ${{ env.REGISTRY }}/${{ env.REPO }}-backend:latest
             ${{ env.REGISTRY }}/${{ env.REPO }}-backend:sha-${{ github.sha }}
-
-  build-gpu-worker:
-    if: github.event_name != 'pull_request'
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write
-    outputs:
-      digest: ${{ steps.build.outputs.digest }}
-    steps:
-      - uses: actions/checkout@v4
-      - uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-      - id: build
-        uses: docker/build-push-action@v6
-        with:
-          context: ./gpu_worker
-          push: true
-          tags: |
-            ${{ env.REGISTRY }}/${{ env.REPO }}-gpu-worker:latest
-            ${{ env.REGISTRY }}/${{ env.REPO }}-gpu-worker:sha-${{ github.sha }}
 
   deploy:
     needs: [build-frontend, build-backend]
@@ -100,14 +70,11 @@ jobs:
         run: |
           mkdir -p ~/.kube
           echo "${{ secrets.SEALOS_KUBECONFIG }}" | base64 -d > ~/.kube/config
-      - name: Apply deployments
+      - name: Apply manifests
         run: |
-          kubectl apply -f deploy/sealos/postgres.yaml
-          kubectl apply -f deploy/sealos/redis.yaml
-          kubectl apply -f deploy/sealos/minio.yaml
+          kubectl apply -f deploy/sealos/ingress.yaml
           kubectl apply -f deploy/sealos/backend.yaml
           kubectl apply -f deploy/sealos/frontend.yaml
-          kubectl apply -f deploy/sealos/ingress.yaml
       - name: Update images
         run: |
           kubectl set image deployment/frontend -n ns-mzyybqj8 \
@@ -118,23 +85,9 @@ jobs:
         run: |
           kubectl rollout status deployment/frontend -n ns-mzyybqj8 --timeout=120s
           kubectl rollout status deployment/backend -n ns-mzyybqj8 --timeout=120s
-      - name: Check pod status
+      - name: Status check
         run: |
-          echo "=== Pods ==="
-          kubectl get pods -n ns-mzyybqj8 -o wide
-          echo "=== Deployments ==="
-          kubectl get deployments -n ns-mzyybqj8
-          echo "=== PVCs ==="
-          kubectl get pvc -n ns-mzyybqj8
-          echo "=== Events (recent) ==="
-          kubectl get events -n ns-mzyybqj8 --sort-by='.lastTimestamp' | tail -30 || true
-          echo "=== Describe postgres ==="
-          kubectl describe pod -n ns-mzyybqj8 -l app=postgres | tail -30 || true
-          echo "=== Describe redis ==="
-          kubectl describe pod -n ns-mzyybqj8 -l app=redis | tail -20 || true
-          echo "=== Describe minio ==="
-          kubectl describe pod -n ns-mzyybqj8 -l app=minio | tail -20 || true
-          echo "=== Backend logs ==="
-          kubectl logs -n ns-mzyybqj8 deployment/backend --tail=50 || true
-          echo "=== Frontend logs ==="
-          kubectl logs -n ns-mzyybqj8 deployment/frontend --tail=20 || true
+          echo "=== Pods ===" && kubectl get pods -n ns-mzyybqj8
+          echo "=== Deployments ===" && kubectl get deployments -n ns-mzyybqj8
+          echo "=== Ingress ===" && kubectl get ingress -n ns-mzyybqj8
+          echo "=== Backend logs ===" && kubectl logs -n ns-mzyybqj8 deployment/backend --tail=30 || true

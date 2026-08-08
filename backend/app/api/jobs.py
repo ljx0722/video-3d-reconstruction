@@ -1,12 +1,14 @@
 import json
 import uuid
 import logging
+import aiofiles
+import os
 from fastapi import APIRouter, UploadFile, File, Form, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.database import get_db
 from app.models.job import Job
-from app.schemas.job import JobCreate, JobResponse, JobSettings
-from app.services import storage_service, task_broker
+from app.schemas.job import JobSettings
+from app.services import storage_service
 from sqlalchemy import select, desc
 
 router = APIRouter(prefix="/api/v1")
@@ -28,8 +30,6 @@ async def upload_job(
     if not content_type.startswith("video/"):
         raise HTTPException(status_code=400, detail="File must be a video")
 
-    job_id = str(uuid.uuid4())
-    video_key = f"videos/{job_id}/raw.mp4"
     contents = await file.read()
     file_size_mb = len(contents) / (1024 * 1024)
 
@@ -37,24 +37,20 @@ async def upload_job(
     if file_size_mb > app_settings.max_video_size_mb:
         raise HTTPException(status_code=413, detail=f"File exceeds {app_settings.max_video_size_mb}MB limit")
 
-    await storage_service.upload_bytes(contents, video_key, content_type)
+    job_id = str(uuid.uuid4())
 
-    # Also store settings for GPU worker to read
-    import json as _json
-    settings_key = f"videos/{job_id}/settings.json"
-    await storage_service.upload_bytes(_json.dumps(job_settings.model_dump()).encode(), settings_key, "application/json")
+    await storage_service.save_upload(job_id, contents, content_type)
+    await storage_service.save_settings(job_id, job_settings.model_dump_json())
 
     job = Job(
         id=job_id,
         session_id="anonymous",
         status="uploaded",
-        video_path=video_key,
+        video_path=job_id,
         settings=job_settings.model_dump_json(),
     )
     db.add(job)
     await db.commit()
-
-    task_broker.enqueue_gpu_job(job_id)
 
     return {"id": job_id, "status": "uploaded"}
 
@@ -81,6 +77,12 @@ async def delete_job(job_id: str, db: AsyncSession = Depends(get_db)):
     job = result.scalar_one_or_none()
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
+
+    import shutil
+    job_dir = os.path.join(storage_service.settings.upload_dir, job_id)
+    if os.path.exists(job_dir):
+        shutil.rmtree(job_dir)
+
     await db.delete(job)
     await db.commit()
     return {"ok": True}
@@ -98,7 +100,7 @@ def _job_to_response(job: Job) -> dict:
         "status": job.status,
         "progress": job.progress,
         "settings": settings,
-        "result_url": f"/files/{job.id}/result.glb" if job.result_path else None,
+        "result_url": f"/files/{job.id}/result.glb",
         "error_message": job.error_message,
         "num_frames": job.num_frames,
         "num_points": job.num_points,
