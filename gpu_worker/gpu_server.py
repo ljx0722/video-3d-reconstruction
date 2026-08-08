@@ -253,21 +253,52 @@ def process_video(video_path: str, settings: dict) -> str:
         vis_pred["world_points_from_depth"] = world_pts
         logger.info(f"world_points_from_depth: {S}x{H}x{W}")
 
+    # ── Spatial subsample for manageable GLB size ────────────────────────
+    skip_spatial = 2  # 2x spatial downsample: 294x518 -> 147x259 per frame
+    vis_pred_sub = {}
+    for k, v in vis_pred.items():
+        if k == "depth" and v.ndim >= 4:
+            vis_pred_sub[k] = v[:, ::skip_spatial, ::skip_spatial]
+        elif k == "depth_conf" and v is not None and v.ndim >= 3:
+            vis_pred_sub[k] = v[:, ::skip_spatial, ::skip_spatial]
+        elif k == "world_points_from_depth" and v.ndim >= 4:
+            vis_pred_sub[k] = v[:, ::skip_spatial, ::skip_spatial]
+        elif k == "images" and v.ndim >= 4:
+            if v.shape[1] == 3:  # (S, 3, H, W)
+                vis_pred_sub[k] = v[:, :, ::skip_spatial, ::skip_spatial]
+            else:
+                vis_pred_sub[k] = v[:, ::skip_spatial, ::skip_spatial]
+        else:
+            vis_pred_sub[k] = v
+    num_frames_sub = vis_pred_sub.get("depth", vis_pred.get("depth")).shape[0]
+    logger.info(f"Spatial subsample: {num_frames_sub} frames -> {num_frames_sub//2 if num_frames_sub > 40 else num_frames_sub}")
+
+    # ── Temporal subsample: ~30 keyframes ───────────────────────────────
+    step = max(1, num_frames_sub // 30)
+    vis_pred_final = {}
+    for k, v in vis_pred_sub.items():
+        if isinstance(v, np.ndarray) and v.ndim >= 3 and v.shape[0] == num_frames_sub:
+            vis_pred_final[k] = v[::step]
+        else:
+            vis_pred_final[k] = v
+    nf = num_frames_sub // step
+    logger.info(f"Temporal subsample: {num_frames_sub} -> {nf} frames")
+
     # ── Export GLB via official lingbot-map function ─────────────────────
     from lingbot_map.vis.glb_export import predictions_to_glb
 
     glb_path = os.path.join(tmpdir, "output.glb")
     scene = predictions_to_glb(
-        vis_pred,
-        conf_thres=50,  # keep top 50% most confident
-        show_cam=True,  # camera frustums
+        vis_pred_final,
+        conf_thres=30,   # moderate confidence filtering
+        show_cam=True,
         mask_sky=False,
     )
 
     # Apply scene alignment (same as glb_export.apply_scene_alignment)
-    num_cameras = len(vis_pred["extrinsic"])
-    ext_matrices = np.zeros((num_cameras, 4, 4))
-    ext_matrices[:, :3, :4] = vis_pred["extrinsic"]
+    num_cameras_sub = len(vis_pred_final["extrinsic"])
+    ext_matrices = np.zeros((num_cameras_sub, 4, 4))
+    ext_matrices[:, :3, :4] = vis_pred_final["extrinsic"]
     ext_matrices[:, 3, 3] = 1
 
     scene.export(glb_path)
