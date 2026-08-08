@@ -35,7 +35,7 @@ def load_model():
         return
 
     os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
-os.environ.setdefault("HF_ENDPOINT", "https://hf-mirror.com")
+    os.environ.setdefault("HF_ENDPOINT", "https://hf-mirror.com")
     import torch
 
     _device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
