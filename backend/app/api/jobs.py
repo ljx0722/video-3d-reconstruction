@@ -1,14 +1,13 @@
 import json
 import uuid
 import logging
-import threading
 import os
 from fastapi import APIRouter, UploadFile, File, Form, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.database import get_db
 from app.models.job import Job
 from app.schemas.job import JobSettings
-from app.services import storage_service, processor
+from app.services import storage_service
 from sqlalchemy import select, desc
 
 router = APIRouter(prefix="/api/v1")
@@ -52,14 +51,7 @@ async def upload_job(
     db.add(job)
     await db.commit()
 
-    # Kick off processing in background thread
-    t = threading.Thread(
-        target=processor.process_video_sync,
-        args=(job_id, app_settings.upload_dir, app_settings.database_url),
-        daemon=True,
-    )
-    t.start()
-
+    # GPU Worker polls for pending jobs, no local processing needed
     return {"id": job_id, "status": "uploaded"}
 
 
