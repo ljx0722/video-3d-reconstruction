@@ -39,6 +39,11 @@ async def upload_job(
 
     await storage_service.upload_bytes(contents, video_key, content_type)
 
+    # Also store settings for GPU worker to read
+    import json as _json
+    settings_key = f"videos/{job_id}/settings.json"
+    await storage_service.upload_bytes(_json.dumps(job_settings.model_dump()).encode(), settings_key, "application/json")
+
     job = Job(
         id=job_id,
         session_id="anonymous",
