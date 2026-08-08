@@ -16,7 +16,7 @@ metadata:
   name: video2gauss
   namespace: ns-mzyybqj8
   labels:
-    cloud.sealos.io/app-deploy-manager: video-3d-reconstruction
+    cloud.sealos.io/app-deploy-manager: video2gauss
     cloud.sealos.io/app-deploy-manager-domain: video2gauss
   annotations:
     kubernetes.io/ingress.class: nginx
@@ -41,20 +41,6 @@ spec:
             pathType: Prefix
             backend:
               service:
-                name: frontend
+                name: video2gauss
                 port:
                   number: 80
-          - path: /api
-            pathType: Prefix
-            backend:
-              service:
-                name: backend
-                port:
-                  number: 8000
-          - path: /files
-            pathType: Prefix
-            backend:
-              service:
-                name: backend
-                port:
-                  number: 8000

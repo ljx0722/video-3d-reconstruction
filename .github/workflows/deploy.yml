@@ -70,23 +70,26 @@ jobs:
         run: |
           mkdir -p ~/.kube
           echo "${{ secrets.SEALOS_KUBECONFIG }}" | base64 -d > ~/.kube/config
+      - name: Cleanup old deployments
+        run: |
+          kubectl delete deploy frontend -n ns-mzyybqj8 --ignore-not-found=true 2>/dev/null || true
+          kubectl delete deploy backend -n ns-mzyybqj8 --ignore-not-found=true 2>/dev/null || true
+          kubectl delete svc frontend -n ns-mzyybqj8 --ignore-not-found=true 2>/dev/null || true
+          kubectl delete svc backend -n ns-mzyybqj8 --ignore-not-found=true 2>/dev/null || true
       - name: Apply manifests
         run: |
           kubectl apply -f deploy/sealos/ingress.yaml
-          kubectl apply -f deploy/sealos/backend.yaml
-          kubectl apply -f deploy/sealos/frontend.yaml
+          kubectl apply -f deploy/sealos/combined.yaml
       - name: Update images
         run: |
-          kubectl set image deployment/frontend -n ns-mzyybqj8 \
-            frontend=${{ env.REGISTRY }}/${{ env.REPO }}-frontend:sha-${{ github.sha }}
-          kubectl set image deployment/backend -n ns-mzyybqj8 \
+          kubectl set image deployment/video2gauss -n ns-mzyybqj8 \
+            frontend=${{ env.REGISTRY }}/${{ env.REPO }}-frontend:sha-${{ github.sha }} \
             backend=${{ env.REGISTRY }}/${{ env.REPO }}-backend:sha-${{ github.sha }}
       - name: Wait for rollout
         run: |
-          kubectl rollout status deployment/frontend -n ns-mzyybqj8 --timeout=120s
-          kubectl rollout status deployment/backend -n ns-mzyybqj8 --timeout=120s
+          kubectl rollout status deployment/video2gauss -n ns-mzyybqj8 --timeout=120s
       - name: Status
         run: |
           echo "=== Pods ===" && kubectl get pods -n ns-mzyybqj8
           echo "=== Ingress ===" && kubectl get ingress -n ns-mzyybqj8
-          echo "=== Backend ===" && kubectl logs -n ns-mzyybqj8 deployment/backend --tail=10
+          echo "=== Backend ===" && kubectl logs -n ns-mzyybqj8 deployment/video2gauss -c backend --tail=10

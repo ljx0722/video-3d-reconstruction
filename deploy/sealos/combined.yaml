@@ -1,0 +1,80 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: video2gauss
+  namespace: ns-mzyybqj8
+  labels:
+    app: video2gauss
+    cloud.sealos.io/app-deploy-manager: video2gauss
+  annotations:
+    deploy.cloud.sealos.io/maxReplicas: "1"
+    deploy.cloud.sealos.io/minReplicas: "1"
+    originImageName: ghcr.io/ljx0722/video-3d-reconstruction
+spec:
+  replicas: 1
+  revisionHistoryLimit: 1
+  selector:
+    matchLabels:
+      app: video2gauss
+  strategy:
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+    type: RollingUpdate
+  template:
+    metadata:
+      labels:
+        app: video2gauss
+        cloud.sealos.io/app-deploy-manager: video2gauss
+    spec:
+      containers:
+        - name: frontend
+          image: ghcr.io/ljx0722/video-3d-reconstruction-frontend:latest
+          ports:
+            - containerPort: 80
+              name: http
+          resources:
+            requests:
+              memory: "64Mi"
+              cpu: "100m"
+            limits:
+              memory: "128Mi"
+              cpu: "250m"
+        - name: backend
+          image: ghcr.io/ljx0722/video-3d-reconstruction-backend:latest
+          ports:
+            - containerPort: 8000
+          env:
+            - name: DATABASE_URL
+              value: "sqlite+aiosqlite:///./data/jobs.db"
+            - name: PYTHONUNBUFFERED
+              value: "1"
+          volumeMounts:
+            - name: data
+              mountPath: /app/data
+          resources:
+            requests:
+              memory: "128Mi"
+              cpu: "250m"
+            limits:
+              memory: "512Mi"
+              cpu: "1000m"
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: video3d-data-pvc
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: video2gauss
+  namespace: ns-mzyybqj8
+  labels:
+    cloud.sealos.io/app-deploy-manager: video2gauss
+spec:
+  selector:
+    app: video2gauss
+  ports:
+    - port: 80
+      targetPort: 80
+      name: http
