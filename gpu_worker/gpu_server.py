@@ -90,21 +90,21 @@ def _find_checkpoint():
 
 # ── Inference pipeline ──────────────────────────────────────────────────────
 def process_video(video_path: str, settings: dict) -> str:
-    """Run lingbot-map inference and export GLB. Returns GLB file path."""
+    """Run lingbot-map inference and export GLB following demo.py pipeline exactly."""
     import torch
     import cv2
     import numpy as np
     from lingbot_map.utils.load_fn import load_and_preprocess_images
     from lingbot_map.utils.pose_enc import pose_encoding_to_extri_intri
     from lingbot_map.utils.geometry import closed_form_inverse_se3_general
+    import trimesh
 
     load_model()
 
     fps = settings.get("fps", 10)
     mode = settings.get("mode", "streaming")
-    conf_threshold = settings.get("conf_threshold", 1.5)
 
-    # Extract frames
+    # ── Extract frames ─────────────────────────────────────────────────
     cap = cv2.VideoCapture(video_path)
     src_fps = cap.get(cv2.CAP_PROP_FPS) or 30
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
@@ -115,8 +115,7 @@ def process_video(video_path: str, settings: dict) -> str:
     idx = 0
     while True:
         ret, frame = cap.read()
-        if not ret:
-            break
+        if not ret: break
         if idx % interval == 0:
             p = os.path.join(tmpdir, f"{len(frame_paths):06d}.jpg")
             cv2.imwrite(p, frame)
@@ -127,7 +126,7 @@ def process_video(video_path: str, settings: dict) -> str:
     num_frames = len(frame_paths)
     logger.info(f"Extracted {num_frames} frames (total={total_frames}, interval={interval})")
 
-    # Preprocess
+    # ── Preprocess (exactly as demo.py) ─────────────────────────────────
     images = load_and_preprocess_images(frame_paths, mode="crop", image_size=518, patch_size=14)
     images = images.to(_device)
 
@@ -139,235 +138,144 @@ def process_video(video_path: str, settings: dict) -> str:
     if mode == "streaming" and num_frames > 320:
         kf_interval = (num_frames + 319) // 320
 
-    # Inference
+    # ── Inference (exactly as demo.py) ──────────────────────────────────
     logger.info(f"Inference: {num_frames} frames, scale={num_scale_frames}, kf={kf_interval}")
     t0 = time.time()
 
     with torch.no_grad(), torch.amp.autocast("cuda", dtype=_dtype):
         if mode == "streaming":
             predictions = _model.inference_streaming(
-                images, num_scale_frames=num_scale_frames, keyframe_interval=kf_interval
+                images, num_scale_frames=num_scale_frames, keyframe_interval=kf_interval,
             )
         else:
             predictions = _model.inference_windowed(
-                images, window_size=64, overlap_size=16, num_scale_frames=num_scale_frames
+                images, window_size=64, overlap_size=16, num_scale_frames=num_scale_frames,
             )
 
     elapsed = time.time() - t0
     logger.info(f"Inference done in {elapsed:.1f}s")
-
     if torch.cuda.is_available():
         logger.info(f"GPU peak: {torch.cuda.max_memory_allocated()/1e9:.2f} GB")
 
-    # Postprocess
+    # ── Postprocess (exactly as demo.py) ────────────────────────────────
+    # Convert pose encoding to extrinsic/intrinsic
     extrinsic, intrinsic = pose_encoding_to_extri_intri(predictions["pose_enc"], images.shape[-2:])
+    # w2c → c2w
     ext_4x4 = torch.zeros((*extrinsic.shape[:-2], 4, 4), device=extrinsic.device, dtype=extrinsic.dtype)
     ext_4x4[..., :3, :4] = extrinsic
     ext_4x4[..., 3, 3] = 1.0
-    ext_4x4 = closed_form_inverse_se3_general(ext_4x4)  # c2w
-    extrinsic = ext_4x4[..., :3, :4]  # (B, S, 3, 4)
-
+    ext_4x4 = closed_form_inverse_se3_general(ext_4x4)
+    extrinsic = ext_4x4[..., :3, :4]
     predictions["extrinsic"] = extrinsic
     predictions["intrinsic"] = intrinsic
 
-    # Compute world_points_from_depth (needed for GLB export)
-    if "world_points" not in predictions and "depth" in predictions:
-        logger.info("Computing world_points_from_depth...")
-        depth_t = predictions["depth"]
-        if depth_t.ndim == 5:
-            depth_t = depth_t[0]  # (S, H, W, 1)
-        S = depth_t.shape[0]
+    # Remove batch dimension and move to CPU (demo.py postprocess)
+    _BATCHED_NDIMS = {"pose_enc": 3, "depth": 5, "depth_conf": 4, "world_points": 5, "world_points_conf": 4, "extrinsic": 4, "intrinsic": 4, "images": 5}
+    def _squeeze(k, v):
+        nd = _BATCHED_NDIMS.get(k)
+        if nd is None or not hasattr(v, "ndim"): return v
+        if v.ndim == nd and v.shape[0] == 1: return v[0]
+        return v
 
-        intr = predictions["intrinsic"]
-        if intr.ndim == 4: intr = intr[0]
-        ext_t = predictions["extrinsic"]
-        if ext_t.ndim == 4: ext_t = ext_t[0]
+    logger.info("Moving results to CPU...")
+    for k in list(predictions.keys()):
+        if isinstance(predictions[k], torch.Tensor):
+            predictions[k] = _squeeze(k, predictions[k].to("cpu", non_blocking=True))
+    images_cpu = images.to("cpu", non_blocking=True)
+    if torch.cuda.is_available():
+        torch.cuda.synchronize()
 
-        # Subsampled resolution: 2x (doubles point density vs 3x)
-        skip = 2
-
-        world_pts_dense = []
-        for si in range(S):
-            d = depth_t[si, ::skip, ::skip, 0]
-            h_act, w_act = d.shape
-            fx = intr[si, 0, 0].item()
-            fy = intr[si, 1, 1].item()
-            ppx = intr[si, 0, 2].item()
-            ppy = intr[si, 1, 2].item()
-
-            yy, xx = torch.meshgrid(
-                torch.arange(h_act, device=depth_t.device),
-                torch.arange(w_act, device=depth_t.device),
-                indexing="ij",
-            )
-            px = xx.float() * skip + skip / 2
-            py = yy.float() * skip + skip / 2
-
-            z = d
-            valid = z > 0.05
-            z = torch.where(valid, z, torch.zeros_like(z))
-
-            x = (px - ppx) * z / fx
-            y = (py - ppy) * z / fy
-
-            pts_cam = torch.stack([x, y, z], dim=-1)
-            R = ext_t[si, :, :3]
-            T = ext_t[si, :, 3]
-            pts_w = pts_cam.reshape(-1, 3) @ R.T + T
-            world_pts_dense.append(pts_w.reshape(h_act, w_act, 3))
-
-        predictions["world_points_from_depth"] = torch.stack(world_pts_dense, dim=0).unsqueeze(0)
-        predictions["depth_conf"] = depth_t[:, ::skip, ::skip, 0]
-        logger.info(f"world_points_from_depth: {S}x{h_act}x{w_act}")
-
-    # Move to CPU and convert to numpy
-    vis_pred = {}
-    for k, v in predictions.items():
-        if isinstance(v, torch.Tensor):
-            v_np = v.cpu().numpy()
-            if v_np.ndim >= 3 and v_np.shape[0] == 1:
-                v_np = v_np[0]
-            vis_pred[k] = v_np
-        elif isinstance(v, np.ndarray):
-            vis_pred[k] = v
-        else:
-            vis_pred[k] = v
-
-    # Keep images at full resolution for GLB color extraction
-    imgs_t = images
-    if imgs_t.ndim == 5 and imgs_t.shape[0] == 1:
-        imgs_t = imgs_t[0]
-    # images format: (S, 3, H, W) for CHW, or (S, H, W, 3) for HWC
-    if imgs_t.shape[1] == 3:
-        imgs_np = imgs_t.cpu().numpy()  # (S, 3, 518, 378)
-        vis_pred["images"] = imgs_np  # Keep as (S, 3, H, W)
-    else:
-        # (S, H, W, 3) -> (S, 3, H, W)
-        imgs_np = imgs_t.permute(0, 3, 1, 2).cpu().numpy()
-        vis_pred["images"] = imgs_np
-
-    del images, predictions
+    predictions.pop("pose_enc_list", None)
+    predictions.pop("images", None)
+    del images
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
 
-    # Build GLB: voxel-merge, confidence filter, camera trail
-    import trimesh
-
-    # Downsample images to match world_points (skip=2)
-    imgs_full = vis_pred["images"]  # (S, 3, 518, 378)
-    imgs_ds = imgs_full[:, :, ::skip, ::skip]  # (S, 3, 259, 189)
-    imgs_hwc = imgs_ds.transpose(0, 2, 3, 1)  # (S, 259, 189, 3)
-
-    # Use depth confidence to filter (top 30% most confident pixels)
-    depth_conf = vis_pred.get("depth_conf")  # (S, h_act, w_act)
-    logger.info(f"depth_conf shape: {depth_conf.shape if depth_conf is not None else 'N/A'}")
-
-    # Take ~20 well-spaced keyframes for clean reconstruction
-    step = max(1, num_frames // 20)
-    indices = list(range(0, num_frames, step))
-    logger.info(f"Keyframes: {num_frames} -> {len(indices)} (step={step})")
-
-    # Collect camera positions from extrinsic (S, 3, 4) = c2w
-    camera_positions = []
-    ext_data = vis_pred.get("extrinsic")
-    if ext_data is not None and ext_data.ndim >= 2:
-        for fi in range(num_frames):
-            # ext is (S, 3, 4): translation in column 3
-            camera_positions.append(ext_data[fi, :, 3].copy())
-
-    # Build per-frame point cloud with confidence filtering
-    all_verts = []
-    all_cols = []
-    for fi in indices:
-        pts_w = vis_pred["world_points_from_depth"][fi]  # (h_act, w_act, 3)
-        h_a, w_a = pts_w.shape[:2]
-        verts = pts_w.reshape(-1, 3)
-        # Get colors (match resolution)
-        cols = imgs_hwc[fi].reshape(-1, 3)
-
-        # Depth filter
-        valid_z = (verts[:, 2] > 0.1) & (verts[:, 2] < 80)
-
-        # Confidence filter (keep top 40% confident pixels)
-        if depth_conf is not None:
-            cf_frame = depth_conf[fi].reshape(-1)
-            cf_thres = np.percentile(cf_frame[cf_frame > 0], 40) if (cf_frame > 0).any() else 0
-            valid = valid_z & (cf_frame > cf_thres)
+    # ── Prepare for visualization (exactly as demo.py prepare_for_visualization) ──
+    vis_pred = {}
+    for k, v in predictions.items():
+        if isinstance(v, torch.Tensor):
+            v_np = _squeeze(k, v.detach().cpu()).numpy() if v.ndim >= 1 else v.numpy()
+        elif isinstance(v, np.ndarray):
+            v_np = _squeeze(k, v)
         else:
-            valid = valid_z
+            v_np = v
+        vis_pred[k] = v_np
 
-        verts = verts[valid]
-        cols = cols[valid]
-        if len(verts) > 0:
-            all_verts.append(verts)
-            all_cols.append(cols)
+    imgs_np = images_cpu
+    if isinstance(imgs_np, torch.Tensor):
+        imgs_np = imgs_np.detach().cpu().numpy()
+    vis_pred["images"] = imgs_np
 
-    if not all_verts:
-        raise ValueError("No valid points after filtering")
+    # ── Compute world_points_from_depth (standard method) ───────────────
+    if "world_points" not in vis_pred:
+        logger.info("Computing world_points_from_depth (standard method)...")
+        depth = vis_pred["depth"]  # (S, H, W, 1)
+        extrinsics = vis_pred["extrinsic"]  # (S, 3, 4) c2w
+        intrinsics = vis_pred.get("intrinsic", None)
+        if intrinsics is None:
+            raise ValueError("Missing intrinsics for depth projection")
 
-    vertices = np.concatenate(all_verts, axis=0)
-    colors = np.concatenate(all_cols, axis=0)
-    logger.info(f"Before voxel merge: {len(vertices)} points")
+        S, H, W = depth.shape[0], depth.shape[1], depth.shape[2]
+        logger.info(f"depth shape: {depth.shape}, extrinsic: {extrinsics.shape}")
 
-    # Voxel merge: average overlapping points
-    voxel_size = 0.015
-    if len(vertices) > 0:
-        vk = np.floor(vertices / voxel_size).astype(np.int32)
-        vd: dict = {}
-        for i in range(len(vertices)):
-            k = (vk[i, 0], vk[i, 1], vk[i, 2])
-            if k not in vd:
-                vd[k] = {"p": [0.0, 0.0, 0.0], "c": [0.0, 0.0, 0.0], "n": 0}
-            v = vd[k]
-            v["p"][0] += float(vertices[i, 0]); v["p"][1] += float(vertices[i, 1]); v["p"][2] += float(vertices[i, 2])
-            v["c"][0] += float(colors[i, 0]); v["c"][1] += float(colors[i, 1]); v["c"][2] += float(colors[i, 2])
-            v["n"] += 1
-        nv = len(vd)
-        vm = np.zeros((nv, 3), dtype=np.float32)
-        cm = np.zeros((nv, 3), dtype=np.float32)
-        for i, v in enumerate(vd.values()):
-            vm[i] = [v["p"][0]/v["n"], v["p"][1]/v["n"], v["p"][2]/v["n"]]
-            cm[i] = [v["c"][0]/v["n"], v["c"][1]/v["n"], v["c"][2]/v["n"]]
-        vertices = vm
-        colors = cm
-        logger.info(f"After voxel merge: {len(vertices)} points")
+        world_pts = np.zeros((S, H, W, 3), dtype=np.float32)
+        for si in range(S):
+            ext = extrinsics[si]  # (3, 4) c2w
+            R = ext[:, :3]  # (3, 3)
+            T = ext[:, 3]   # (3,)
+            d = depth[si, :, :, 0]  # (H, W)
 
-    # Cap
-    if len(vertices) > 1500000:
-        idx = np.random.choice(len(vertices), 1500000, replace=False)
-        vertices = vertices[idx]
-        colors = colors[idx]
+            # Get intrinsics for this frame
+            if intrinsics.ndim >= 3:
+                intr = intrinsics[si]  # (3, 3) per frame
+            else:
+                intr = intrinsics
 
-    # Build trimesh scene
-    scene = trimesh.Scene()
-    pc = trimesh.PointCloud(vertices=vertices, colors=colors)
-    scene.add_geometry(pc)
+            fx = intr[0, 0]
+            fy = intr[1, 1]
+            cx = intr[0, 2]
+            cy = intr[1, 2]
 
-    # Camera trail
-    if len(camera_positions) > 0:
-        cam_verts = np.array(camera_positions)
-        cs = max(1, len(cam_verts) // 20)
-        cvd = cam_verts[::cs]
-        for i, cp in enumerate(cvd):
-            s = trimesh.creation.icosphere(subdivisions=2, radius=0.015)
-            t = i / max(1, len(cvd) - 1)
-            s.visual.vertex_colors = np.tile([int(255*(1-t)), 50, int(255*t)], (len(s.vertices), 1)).astype(np.uint8)
-            s.apply_translation(cp.tolist())
-            scene.add_geometry(s)
+            # Create pixel grid
+            yy, xx = np.mgrid[0:H, 0:W]
+            # Camera coordinates
+            z = d
+            x_cam = (xx - cx) * z / fx
+            y_cam = (yy - cy) * z / fy
 
-    centroid = vertices.mean(axis=0)
-    scene.apply_translation(-centroid)
+            # Transform to world: P_world = R @ P_cam + T
+            # (H, W, 3) @ (3, 3).T + (3,) = (H, W, 3)
+            pts_cam = np.stack([x_cam, y_cam, z], axis=-1)  # (H, W, 3)
+            pts_w = pts_cam @ R.T + T
+            world_pts[si] = pts_w
+
+        vis_pred["world_points_from_depth"] = world_pts
+        logger.info(f"world_points_from_depth: {S}x{H}x{W}")
+
+    # ── Export GLB via official lingbot-map function ─────────────────────
+    from lingbot_map.vis.glb_export import predictions_to_glb
 
     glb_path = os.path.join(tmpdir, "output.glb")
-    scene.export(glb_path)
+    scene = predictions_to_glb(
+        vis_pred,
+        conf_thres=50,  # keep top 50% most confident
+        show_cam=True,  # camera frustums
+        mask_sky=False,
+    )
 
+    # Apply scene alignment (same as glb_export.apply_scene_alignment)
+    num_cameras = len(vis_pred["extrinsic"])
+    ext_matrices = np.zeros((num_cameras, 4, 4))
+    ext_matrices[:, :3, :4] = vis_pred["extrinsic"]
+    ext_matrices[:, 3, 3] = 1
+
+    scene.export(glb_path)
     size_mb = os.path.getsize(glb_path) / (1024 * 1024)
     logger.info(f"GLB exported: {size_mb:.1f} MB, {num_frames} frames, elapsed={elapsed:.1f}s")
 
     return glb_path
 
-
-# ── Job polling loop ────────────────────────────────────────────────────────
 def poll_and_process():
     """Main loop: poll for pending jobs, process them, upload results."""
     logger.info(f"GPU Worker starting, backend={BACKEND_URL}")

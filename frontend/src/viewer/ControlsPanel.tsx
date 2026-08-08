@@ -35,6 +35,14 @@ export default function ControlsPanel(p: CtrlProps) {
 
   return (
     <>
+      {/* Point count badge - top left */}
+      <div className="absolute left-3 top-3 z-10 bg-gray-900/80 backdrop-blur rounded-lg px-3 py-1.5 text-xs text-gray-400 border border-gray-800">
+        点云 <span className="text-gray-200 font-mono">{(p.pointCount / 10000).toFixed(1)}万</span>
+        {p.pointCount !== p.originalCount && (
+          <span className="text-gray-600 ml-1">/ {(p.originalCount / 10000).toFixed(1)}万 原始</span>
+        )}
+      </div>
+
       {/* Floating circular controls - right side */}
       <div className="absolute right-3 top-1/2 -translate-y-1/2 z-10 flex flex-col gap-2">
 
@@ -80,15 +88,6 @@ export default function ControlsPanel(p: CtrlProps) {
         <Btn icon="↓" label="导出" active={panel === 'export'} onClick={() => toggle('export')} />
         {panel === 'export' && (
           <ExportPanel onExport={p.onExport} />
-        )}
-      </div>
-
-      {/* Point count badge */}
-      <div className="absolute right-14 top-1/2 -translate-y-1/2 -mt-10 z-10
-        bg-gray-900/80 rounded-lg px-2 py-1 text-[10px] text-gray-500">
-        {(p.pointCount / 10000).toFixed(1)}万
-        {p.pointCount !== p.originalCount && (
-          <span className="text-gray-700">/{((p.originalCount / 10000).toFixed(1))}万</span>
         )}
       </div>
     </>
