@@ -267,12 +267,13 @@ def process_video(video_path: str, settings: dict) -> str:
     indices = list(range(0, num_frames, step))
     logger.info(f"Keyframes: {num_frames} -> {len(indices)} (step={step})")
 
-    # Collect camera positions from extrinsic (c2w)
+    # Collect camera positions from extrinsic (S, 3, 4) = c2w
     camera_positions = []
-    ext_data = vis_pred.get("extrinsic")  # (S, 3, 4)
-    if ext_data is not None:
+    ext_data = vis_pred.get("extrinsic")
+    if ext_data is not None and ext_data.ndim >= 2:
         for fi in range(num_frames):
-            camera_positions.append(ext_data[fi, :, 3] / ext_data[fi, 3, 3] if ext_data.shape[-1] == 4 else ext_data[fi, :, 3])
+            # ext is (S, 3, 4): translation in column 3
+            camera_positions.append(ext_data[fi, :, 3].copy())
 
     # Build per-frame point cloud with confidence filtering
     all_verts = []
