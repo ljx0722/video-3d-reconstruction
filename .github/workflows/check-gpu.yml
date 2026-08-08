@@ -1,0 +1,33 @@
+name: Check GPU Nodes
+
+on:
+  workflow_dispatch:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: azure/setup-kubectl@v4
+        with:
+          version: latest
+      - name: Config
+        run: |
+          mkdir -p ~/.kube
+          echo "${{ secrets.SEALOS_KUBECONFIG }}" | base64 -d > ~/.kube/config
+      - name: Check GPU
+        run: |
+          echo === Nodes ===
+          kubectl get nodes -o wide
+          echo === GPU resources ===
+          kubectl get nodes -o json 2>/dev/null | python3 -c "
+import json,sys
+for n in json.load(sys.stdin).get('items',[]):
+    name=n['metadata']['name']
+    gpu=n.get('status',{}).get('capacity',{}).get('nvidia.com/gpu','none')
+    alloc=n.get('status',{}).get('allocatable',{}).get('nvidia.com/gpu','none')
+    print(f'{name}: capacity_gpu={gpu} allocatable_gpu={alloc}')
+"
+          echo === GPU worker deploy status ===
+          kubectl get deploy gpu-worker -n ns-mzyybqj8 2>/dev/null || echo no-gpu-worker-deploy
+          echo === Check model PVC ===
+          kubectl get pvc -n ns-mzyybqj8 2>/dev/null
