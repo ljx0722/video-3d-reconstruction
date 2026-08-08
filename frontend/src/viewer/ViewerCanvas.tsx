@@ -1,4 +1,4 @@
-import { Suspense, useState } from 'react';
+import { Suspense } from 'react';
 import { Canvas } from '@react-three/fiber';
 import { OrbitControls, PerspectiveCamera, Grid } from '@react-three/drei';
 import { getResultUrl } from '../api/client';
@@ -8,8 +8,9 @@ interface Props {
   jobId: string;
 }
 
+const POINT_SIZE = 0.005;
+
 export default function ViewerCanvas({ jobId }: Props) {
-  const [pointSize, setPointSize] = useState(0.005);
 
   return (
     <Canvas className="!absolute inset-0" gl={{ preserveDrawingBuffer: true }}>
@@ -18,7 +19,7 @@ export default function ViewerCanvas({ jobId }: Props) {
       <directionalLight position={[10, 10, 5]} intensity={0.3} />
 
       <Suspense fallback={null}>
-        <ModelLoader url={getResultUrl(jobId)} pointSize={pointSize} />
+        <ModelLoader url={getResultUrl(jobId)} pointSize={POINT_SIZE} />
       </Suspense>
 
       <Grid infiniteGrid fadeDistance={50} fadeStrength={5} sectionSize={1} cellSize={0.5} />

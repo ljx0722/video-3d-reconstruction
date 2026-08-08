@@ -1,4 +1,4 @@
-import { useEffect, useRef, useCallback } from 'react';
+import { useEffect, useRef } from 'react';
 
 export function useWebSocket(jobId: string | undefined, onMessage: (data: any) => void) {
   const wsRef = useRef<WebSocket | null>(null);

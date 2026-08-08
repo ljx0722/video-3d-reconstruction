@@ -1,7 +1,7 @@
 import { useState, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useDropzone } from 'react-dropzone';
-import { createJob, uploadVideo } from '../api/client';
+import { uploadVideo } from '../api/client';
 
 export default function UploadZone() {
   const [uploading, setUploading] = useState(false);
