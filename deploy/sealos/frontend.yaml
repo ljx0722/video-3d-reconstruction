@@ -5,6 +5,10 @@ metadata:
   namespace: ns-mzyybqj8
   labels:
     cloud.sealos.io/app-deploy-manager: video-3d-reconstruction
+  annotations:
+    deploy.cloud.sealos.io/maxReplicas: "1"
+    deploy.cloud.sealos.io/minReplicas: "1"
+    originImageName: ghcr.io/ljx0722/video-3d-reconstruction-frontend
 spec:
   replicas: 1
   selector:

@@ -70,13 +70,6 @@ jobs:
         run: |
           mkdir -p ~/.kube
           echo "${{ secrets.SEALOS_KUBECONFIG }}" | base64 -d > ~/.kube/config
-      - name: Cleanup stale deployments
-        run: |
-          kubectl delete deployment postgres -n ns-mzyybqj8 --ignore-not-found=true || true
-          kubectl delete deployment redis -n ns-mzyybqj8 --ignore-not-found=true || true
-          kubectl delete deployment minio -n ns-mzyybqj8 --ignore-not-found=true || true
-          kubectl delete deployment gpu-worker -n ns-mzyybqj8 --ignore-not-found=true || true
-          kubectl delete pvc minio-data-pvc pgdata-pvc model-pvc -n ns-mzyybqj8 --ignore-not-found=true || true
       - name: Apply manifests
         run: |
           kubectl apply -f deploy/sealos/ingress.yaml
@@ -92,15 +85,8 @@ jobs:
         run: |
           kubectl rollout status deployment/frontend -n ns-mzyybqj8 --timeout=120s
           kubectl rollout status deployment/backend -n ns-mzyybqj8 --timeout=120s
-      - name: Status check
+      - name: Status
         run: |
           echo "=== Pods ===" && kubectl get pods -n ns-mzyybqj8
-          echo "=== Deployments ===" && kubectl get deployments -n ns-mzyybqj8
-          echo "=== Ingress ===" && kubectl get ingress -n ns-mzyybqj8 -o wide
-          echo "=== Check Sealos App CRDs ==="
-          kubectl api-resources 2>/dev/null | grep -iE "app.sealos|instance" || echo "none found"
-          echo "=== Describe gesture-island app CR ==="
-          kubectl describe app gesture-island -n ns-mzyybqj8 2>/dev/null || echo "no app CR"
-          echo "=== get app yaml ==="
-          kubectl get app -n ns-mzyybqj8 -o yaml 2>/dev/null | head -100 || echo "no apps"
-          echo "=== Backend logs ===" && kubectl logs -n ns-mzyybqj8 deployment/backend --tail=30 || true
+          echo "=== Ingress ===" && kubectl get ingress -n ns-mzyybqj8
+          echo "=== Backend ===" && kubectl logs -n ns-mzyybqj8 deployment/backend --tail=10
