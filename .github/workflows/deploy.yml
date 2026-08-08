@@ -70,12 +70,19 @@ jobs:
         run: |
           mkdir -p ~/.kube
           echo "${{ secrets.SEALOS_KUBECONFIG }}" | base64 -d > ~/.kube/config
-      - name: Cleanup old deployments
+      - name: Cleanup duplicates
         run: |
           kubectl delete deploy frontend -n ns-mzyybqj8 --ignore-not-found=true 2>/dev/null || true
           kubectl delete deploy backend -n ns-mzyybqj8 --ignore-not-found=true 2>/dev/null || true
           kubectl delete svc frontend -n ns-mzyybqj8 --ignore-not-found=true 2>/dev/null || true
           kubectl delete svc backend -n ns-mzyybqj8 --ignore-not-found=true 2>/dev/null || true
+          for svc in $(kubectl get svc -n ns-mzyybqj8 -o name | grep video2gauss); do
+            sname=$(echo $svc | cut -d/ -f2)
+            if [ "$sname" != "video2gauss" ]; then
+              echo "Deleting duplicate service: $sname"
+              kubectl delete svc $sname -n ns-mzyybqj8 2>/dev/null || true
+            fi
+          done
       - name: Apply manifests
         run: |
           kubectl apply -f deploy/sealos/ingress.yaml
