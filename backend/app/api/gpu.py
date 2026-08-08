@@ -3,8 +3,7 @@ import json
 import logging
 import glob as _glob
 from fastapi import APIRouter, UploadFile, File, HTTPException, Body, Request
-from fastapi.responses import FileResponse, PlainTextResponse
-import aiofiles
+from fastapi.responses import FileResponse
 from sqlalchemy import select
 from app.database import async_session
 from app.models.job import Job
@@ -76,8 +75,8 @@ async def upload_result_raw(job_id: str, request: Request):
     job_dir = os.path.join(settings.upload_dir, job_id)
     os.makedirs(job_dir, exist_ok=True)
     glb_path = os.path.join(job_dir, "result.glb")
-    async with aiofiles.open(glb_path, "wb") as f:
-        await f.write(glb_data)
+    with open(glb_path, "wb") as f:
+        f.write(glb_data)
 
     import time as _time
     async with async_session() as session:

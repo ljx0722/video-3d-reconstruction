@@ -245,11 +245,22 @@ def process_video(video_path: str, settings: dict) -> str:
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
 
-    # Export GLB
+    # Export GLB (with downsampling to keep file size reasonable)
     from lingbot_map.vis.glb_export import predictions_to_glb
 
+    # Downsample frames to ~30 keyframes to keep GLB under 200MB
+    step = max(1, num_frames // 30)
+    vis_pred_filtered = {}
+    for k, v in vis_pred.items():
+        if isinstance(v, np.ndarray) and v.ndim >= 3 and v.shape[0] == num_frames:
+            vis_pred_filtered[k] = v[::step]
+        else:
+            vis_pred_filtered[k] = v
+    num_frames_filtered = num_frames // step
+    logger.info(f"Vis frames downsampled: {num_frames} -> {num_frames_filtered}")
+
     glb_path = os.path.join(tmpdir, "output.glb")
-    scene = predictions_to_glb(vis_pred, conf_thres=conf_threshold, show_cam=True, mask_sky=False)
+    scene = predictions_to_glb(vis_pred_filtered, conf_thres=max(conf_threshold, 30), show_cam=True, mask_sky=False)
     scene.export(glb_path)
 
     size_mb = os.path.getsize(glb_path) / (1024 * 1024)
