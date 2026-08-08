@@ -53,7 +53,7 @@ os.environ.setdefault("HF_ENDPOINT", "https://hf-mirror.com")
         enable_3d_rope=True, max_frame_num=1024,
         kv_cache_sliding_window=64, kv_cache_scale_frames=8,
         kv_cache_cross_frame_special=True, kv_cache_include_scale_frames=True,
-        use_sdpa=False, camera_num_iterations=4,
+        use_sdpa=True, camera_num_iterations=4,
     )
 
     ckpt_path = _find_checkpoint()
@@ -85,14 +85,7 @@ def _find_checkpoint():
     ]:
         if os.path.isfile(path):
             return path
-    # Search
-    import glob
-    candidates = glob.glob("**/checkpoint/**/*.pt", recursive=True) + glob.glob("**/checkpoint/*.pt", recursive=True)
-    if candidates:
-        return candidates[0]
-    raise FileNotFoundError(f"Checkpoint not found at {CHECKPOINT_PATH}. Download with: "
-                            f"python -c \"from huggingface_hub import snapshot_download; "
-                            f"snapshot_download('robbyant/lingbot-map', local_dir='./checkpoint')\"")
+    raise FileNotFoundError(f"Checkpoint not found at {CHECKPOINT_PATH}")
 
 
 # ── Inference pipeline ──────────────────────────────────────────────────────
@@ -217,13 +210,9 @@ def poll_and_process():
     """Main loop: poll for pending jobs, process them, upload results."""
     logger.info(f"GPU Worker starting, backend={BACKEND_URL}")
 
-    # Check if model can be loaded
-    try:
-        _find_checkpoint()
-    except FileNotFoundError:
-        logger.error("Model checkpoint not found! Downloading...")
-        from huggingface_hub import snapshot_download
-        snapshot_download("robbyant/lingbot-map", local_dir="./checkpoint")
+    # Check cp exists (model loaded lazily on first job)
+    _find_checkpoint()
+    logger.info("GPU Worker ready, polling for jobs...")
 
     while True:
         try:
