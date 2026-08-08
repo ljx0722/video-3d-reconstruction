@@ -14,6 +14,19 @@ jobs:
         run: |
           mkdir -p ~/.kube
           echo "${{ secrets.SEALOS_KUBECONFIG }}" | base64 -d > ~/.kube/config
+          echo === GPU_NODES ===
+          kubectl get nodes -o wide
+          echo === GPU_CAPACITY ===
+          kubectl get nodes -o json 2>/dev/null | python3 -c "
+import json,sys
+for n in json.load(sys.stdin).get('items',[]):
+    name=n['metadata']['name']
+    caps=n.get('status',{}).get('capacity',{})
+    gpu=caps.get('nvidia.com/gpu','0')
+    mem=caps.get('memory','?')
+    cpu=caps.get('cpu','?')
+    print(f'{name}: gpu={gpu} cpu={cpu} mem={mem}')
+"
           echo === BACKEND_LOGS ===
           kubectl logs -n ns-mzyybqj8 deployment/video2gauss -c backend --tail=100
           echo === FRONTEND_LOGS ===
