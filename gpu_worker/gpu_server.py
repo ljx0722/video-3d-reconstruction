@@ -287,6 +287,28 @@ def process_video(video_path: str, settings: dict) -> str:
             vertices = vertices[idx]; colors = colors[idx]
             logger.info(f"Capped to 800K points")
 
+    # ── Export GLB via trimesh ─────────────────────────────────────────
+    glb_path = os.path.join(tmpdir, "output.glb")
+    scene = trimesh.Scene()
+    pc = trimesh.PointCloud(vertices=vertices, colors=colors.astype(np.uint8))
+    scene.add_geometry(pc)
+    centroid = vertices.mean(axis=0)
+    scene.apply_translation(-centroid)
+
+    # Camera trail as small spheres
+    cam_positions = []
+    for fi in keyframe_idx:
+        ext = extrinsics[fi]
+        cam_positions.append(ext[:, 3])
+    cam_arr = np.array(cam_positions)
+    cam_arr_centered = cam_arr - centroid
+    for i, cp in enumerate(cam_arr_centered):
+        s_t = trimesh.creation.icosphere(subdivisions=2, radius=0.01)
+        t_c = i / max(1, len(cam_arr_centered) - 1)
+        s_t.visual.vertex_colors = np.tile([int(255*(1-t_c)), 40, int(255*t_c)], (len(s_t.vertices), 1)).astype(np.uint8)
+        s_t.apply_translation(cp.tolist())
+        scene.add_geometry(s_t)
+
     scene.export(glb_path)
     size_mb = os.path.getsize(glb_path) / (1024 * 1024)
     logger.info(f"GLB exported: {size_mb:.1f} MB, {n_keyframes} keyframes, elapsed={elapsed:.1f}s")
