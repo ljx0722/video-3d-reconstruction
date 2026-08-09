@@ -4,14 +4,13 @@ import { OrbitControls, GizmoHelper, GizmoViewport, Grid } from '@react-three/dr
 import * as THREE from 'three';
 import { getResultUrl } from '../api/client';
 import ModelLoader from './ModelLoader';
-import type { ClipPlane, BoxClip } from './Toolbar';
+import type { BoxClip } from './Toolbar';
 
 interface Props {
   jobId: string;
   pointSize: number;
   opacity?: number;
   onPointsReady?: (mesh: THREE.Points) => void;
-  clipPlanes?: ClipPlane[];
   boxClip?: BoxClip;
   showAxes?: boolean;
   orthographic?: boolean;
@@ -19,53 +18,25 @@ interface Props {
   showGrid?: boolean;
 }
 
-function ClippingPlanes3D({ clipPlanes, boxClip }: { clipPlanes: ClipPlane[]; boxClip: BoxClip }) {
-  // Plane visualizers
-  const activePlanes = clipPlanes.filter(p => p.enabled);
-
-  // Build box clip geometry
-  let boxGeom: THREE.BoxGeometry | null = null;
-  if (boxClip.enabled) {
-    const size = [
-      boxClip.max[0] - boxClip.min[0],
-      boxClip.max[1] - boxClip.min[1],
-      boxClip.max[2] - boxClip.min[2],
-    ];
-    const center = [
-      (boxClip.max[0] + boxClip.min[0]) / 2,
-      (boxClip.max[1] + boxClip.min[1]) / 2,
-      (boxClip.max[2] + boxClip.min[2]) / 2,
-    ];
-    boxGeom = new THREE.BoxGeometry(size[0], size[1], size[2]);
-    boxGeom.translate(center[0], center[1], center[2]);
-  }
-
+function BoxWireframe({ boxClip }: { boxClip: BoxClip }) {
+  if (!boxClip.enabled) return null;
+  const size: [number,number,number] = [
+    boxClip.max[0]-boxClip.min[0],
+    boxClip.max[1]-boxClip.min[1],
+    boxClip.max[2]-boxClip.min[2],
+  ];
+  const center: [number,number,number] = [
+    (boxClip.max[0]+boxClip.min[0])/2,
+    (boxClip.max[1]+boxClip.min[1])/2,
+    (boxClip.max[2]+boxClip.min[2])/2,
+  ];
+  const geom = new THREE.BoxGeometry(size[0], size[1], size[2]);
+  geom.translate(center[0], center[1], center[2]);
   return (
-    <group>
-      {/* Plane visualizers */}
-      {activePlanes.map((p, i) => {
-        const size = 5;
-        const pos = [0, 0, 0] as [number, number, number];
-        const rot = p.axis === 'x' ? [0, 0, Math.PI / 2] : p.axis === 'y' ? [0, 0, 0] : [Math.PI / 2, 0, 0];
-        if (p.axis === 'x') pos[0] = p.offset;
-        if (p.axis === 'y') pos[1] = p.offset;
-        if (p.axis === 'z') pos[2] = p.offset;
-        return (
-          <mesh key={`plane-${i}`} position={pos as any} rotation={rot as any}>
-            <planeGeometry args={[size, size]} />
-            <meshBasicMaterial color="#22c55e" transparent opacity={0.15} side={THREE.DoubleSide} />
-          </mesh>
-        );
-      })}
-
-      {/* Box clip wireframe */}
-      {boxClip.enabled && boxGeom && (
-        <lineSegments>
-          <edgesGeometry args={[boxGeom]} />
-          <lineBasicMaterial color="#22c55e" linewidth={1} transparent opacity={0.6} />
-        </lineSegments>
-      )}
-    </group>
+    <lineSegments>
+      <edgesGeometry args={[geom]} />
+      <lineBasicMaterial color="#22c55e" transparent opacity={0.7} depthTest={true} />
+    </lineSegments>
   );
 }
 
@@ -93,30 +64,21 @@ function AxesHelper() {
 
 export default function ViewerCanvas({
   jobId, pointSize, opacity = 1, onPointsReady,
-  clipPlanes, boxClip, showAxes, orthographic, splatMode, showGrid,
+  boxClip, showAxes, orthographic, splatMode, showGrid,
 }: Props) {
-  const defaultClipPlanes: ClipPlane[] = clipPlanes || [
-    { axis: 'x', offset: -1.5, enabled: false, negative: false },
-    { axis: 'x', offset: 1.5, enabled: false, negative: true },
-    { axis: 'y', offset: -1, enabled: false, negative: false },
-    { axis: 'y', offset: 1, enabled: false, negative: true },
-    { axis: 'z', offset: -1, enabled: false, negative: false },
-    { axis: 'z', offset: 1, enabled: false, negative: true },
-  ];
-  const activeClipPlanes = clipPlanes || defaultClipPlanes;
-  const defaultBoxClip: BoxClip = boxClip || { enabled: false, min: [-1, -0.5, -1], max: [1, 0.5, 1] };
-  const activeBoxClip = boxClip || defaultBoxClip;
+  const defaultBox: BoxClip = boxClip || { enabled: false, min: [-1, -0.5, -1], max: [1, 0.5, 1] };
+  const activeBox = boxClip || defaultBox;
 
-  // Build THREE clipping planes for actual rendering
+  // Build THREE clipping planes from box bounds
   const threeClipPlanes: THREE.Plane[] = [];
-  activeClipPlanes.filter(p => p.enabled).forEach(p => {
-    const normal = new THREE.Vector3();
-    if (p.axis === 'x') normal.set(1, 0, 0);
-    if (p.axis === 'y') normal.set(0, 1, 0);
-    if (p.axis === 'z') normal.set(0, 0, 1);
-    if (p.negative) normal.negate();
-    threeClipPlanes.push(new THREE.Plane(normal, Math.abs(p.offset)));
-  });
+  if (activeBox.enabled) {
+    threeClipPlanes.push(new THREE.Plane(new THREE.Vector3( 1, 0, 0), -activeBox.min[0])); // +X min
+    threeClipPlanes.push(new THREE.Plane(new THREE.Vector3(-1, 0, 0),  activeBox.max[0])); // -X max
+    threeClipPlanes.push(new THREE.Plane(new THREE.Vector3( 0, 1, 0), -activeBox.min[1])); // +Y min
+    threeClipPlanes.push(new THREE.Plane(new THREE.Vector3( 0,-1, 0),  activeBox.max[1])); // -Y max
+    threeClipPlanes.push(new THREE.Plane(new THREE.Vector3( 0, 0, 1), -activeBox.min[2])); // +Z min
+    threeClipPlanes.push(new THREE.Plane(new THREE.Vector3( 0, 0,-1),  activeBox.max[2])); // -Z max
+  }
 
   return (
     <Canvas
@@ -144,7 +106,7 @@ export default function ViewerCanvas({
       </Suspense>
 
       {/* Visual guides for clipping planes */}
-      <ClippingPlanes3D clipPlanes={activeClipPlanes} boxClip={activeBoxClip} />
+      <BoxWireframe boxClip={activeBox} />
 
       {/* Grid */}
       {showGrid && <Grid infiniteGrid fadeDistance={50} fadeStrength={5} sectionSize={1} cellSize={0.5} sectionColor="#374151" cellColor="#1f2937" />}

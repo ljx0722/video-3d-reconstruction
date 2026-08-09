@@ -5,22 +5,13 @@ import * as THREE from 'three';
 import { getJob } from '../api/client';
 import ViewerCanvas from './ViewerCanvas';
 import ControlsPanel from './ControlsPanel';
-import { type ClipPlane, type BoxClip } from './Toolbar';
+import { type BoxClip } from './Toolbar';
 import type { Job } from '../types';
 
 const POINT_SIZE = 0.008;
 const statusSteps = [
   { label: '上传视频' }, { label: '等待处理' }, { label: 'GPU 推理计算中' },
   { label: '导出 3D 模型' }, { label: '重建完成' },
-];
-
-const defaultClipPlanes: ClipPlane[] = [
-  { axis: 'x', offset: -1.5, enabled: false, negative: false },
-  { axis: 'x', offset: 1.5, enabled: false, negative: true },
-  { axis: 'y', offset: -1, enabled: false, negative: false },
-  { axis: 'y', offset: 1, enabled: false, negative: true },
-  { axis: 'z', offset: -1, enabled: false, negative: false },
-  { axis: 'z', offset: 1, enabled: false, negative: true },
 ];
 const defaultBoxClip: BoxClip = { enabled: false, min: [-1, -0.5, -1], max: [1, 0.5, 1] };
 
@@ -44,7 +35,6 @@ export default function ViewerPage() {
   const [originalCount, setOriginalCount] = useState(0);
 
   // Clip
-  const [clipPlanes, setClipPlanes] = useState<ClipPlane[]>(defaultClipPlanes);
   const [boxClip, setBoxClip] = useState<BoxClip>(defaultBoxClip);
 
   // Measure
@@ -180,7 +170,6 @@ export default function ViewerPage() {
     updateGeometry(originalData.current.pos, originalData.current.col);
     measurePtsRef.current = [];
     setDistance(null);
-    setClipPlanes(defaultClipPlanes);
     setBoxClip(defaultBoxClip);
   }, [updateGeometry]);
 
@@ -239,14 +228,6 @@ export default function ViewerPage() {
     }
     const pad = 0.02;
     setBoxClip({ enabled: true, min: [mx-pad,my-pad,mz-pad], max: [Mx+pad,My+pad,Mz+pad] });
-    setClipPlanes([
-      {axis:'x',offset:mx-pad,enabled:true,negative:false},
-      {axis:'x',offset:Mx+pad,enabled:true,negative:true},
-      {axis:'y',offset:my-pad,enabled:true,negative:false},
-      {axis:'y',offset:My+pad,enabled:true,negative:true},
-      {axis:'z',offset:mz-pad,enabled:true,negative:false},
-      {axis:'z',offset:Mz+pad,enabled:true,negative:true},
-    ]);
   }, []);
 
   const applyColor = useCallback((mode: string, b: number) => {
@@ -352,7 +333,7 @@ export default function ViewerPage() {
         {job.status==='completed'?(
           <>
             <ViewerCanvas jobId={job.id} pointSize={pointSize} opacity={opacity}
-              onPointsReady={handlePointsReady} clipPlanes={clipPlanes} boxClip={boxClip}
+              onPointsReady={handlePointsReady} boxClip={boxClip}
               showAxes={showAxes} orthographic={orthographic} splatMode={splatMode}
               showGrid={showGrid} />
             <ControlsPanel
@@ -363,7 +344,6 @@ export default function ViewerPage() {
               onVoxelDownsample={doVoxelDownsample}
               onFastOutlierRemove={doFastOutlier}
               onReset={doReset}
-              clipPlanes={clipPlanes} setClipPlanes={setClipPlanes}
               boxClip={boxClip} setBoxClip={setBoxClip}
               measureMode={measureMode} setMeasureMode={setMeasureMode}
               distance={distance} clearMeasure={()=>{measurePtsRef.current=[];setDistance(null);}}

@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import type { ClipPlane, BoxClip } from './Toolbar';
+import type { BoxClip } from './Toolbar';
 
 type PanelId = null | 'view' | 'color' | 'filter' | 'clip' | 'measure' | 'export';
 
@@ -11,7 +11,6 @@ interface CtrlProps {
   onVoxelDownsample: (v: number) => void;
   onFastOutlierRemove: (k: number, s: number) => void;
   onReset: () => void;
-  clipPlanes: ClipPlane[]; setClipPlanes: (p: ClipPlane[]) => void;
   boxClip: BoxClip; setBoxClip: (b: BoxClip) => void;
   measureMode: boolean; setMeasureMode: (m: boolean) => void;
   distance: number | null; clearMeasure: () => void;
@@ -84,8 +83,8 @@ export default function ControlsPanel(p: CtrlProps) {
           onReset={p.onReset} />}
 
         {/* Clipping */}
-        <Btn icon="⊞" label="裁剪工具" active={panel === 'clip'} onClick={() => toggle('clip')} />
-        {panel === 'clip' && <ClipPanel clipPlanes={p.clipPlanes} setClipPlanes={p.setClipPlanes}
+        <Btn icon="⊞" label="包围盒裁剪" active={panel === 'clip'} onClick={() => toggle('clip')} />
+        {panel === 'clip' && <ClipPanel
           boxClip={p.boxClip} setBoxClip={p.setBoxClip} onAutoClip={p.onAutoClip} />}
 
         {/* Measure */}
@@ -215,60 +214,40 @@ function FilterPanel({ voxelSize, setVoxelSize, outlierK, setOutlierK, outlierSt
 }
 
 /* ── Clip Panel ───────────────────────────────────── */
-function ClipPanel({ clipPlanes, setClipPlanes, boxClip, setBoxClip, onAutoClip }: any) {
+function ClipPanel({ boxClip, setBoxClip, onAutoClip }: any) {
   return (
-    <Card title="裁剪工具">
+    <Card title="包围盒裁剪">
       <button onClick={onAutoClip}
         className="w-full bg-blue-500/20 hover:bg-blue-500/30 text-blue-400 rounded px-2 py-1 text-[10px] mb-2 border border-blue-500/20">
-        ▣ 自动包围盒裁剪
+        ▣ 自动适配点云范围
       </button>
 
-      <div className="text-gray-500 text-[10px] mb-1">平面裁剪</div>
-      {clipPlanes.map((p: ClipPlane, i: number) => (
-        <div key={i} className={`mb-1 p-1.5 rounded text-[10px] ${p.enabled ? 'bg-green-500/10 border border-green-500/20' : 'bg-gray-800/30'}`}>
-          <div className="flex items-center gap-1 mb-0.5">
-            <button onClick={() => {
-              const n = [...clipPlanes]; n[i] = { ...p, enabled: !p.enabled }; setClipPlanes(n);
-            }} className={`w-4 h-4 rounded-[3px] text-[9px] flex items-center justify-center ${p.enabled ? 'bg-green-500 text-white' : 'bg-gray-700 text-gray-400'}`}>
-              {p.enabled ? '✓' : ''}</button>
-            <span className="text-gray-400 font-mono">{p.axis}{p.negative ? '⁻' : '⁺'}</span>
-          </div>
-          <input type="range" min={-5} max={5} step={0.005} value={p.offset}
-            onChange={e => { const n = [...clipPlanes]; n[i] = { ...p, offset: Number(e.target.value) }; setClipPlanes(n); }}
-            className="w-full accent-green-500 h-1" />
-          <div className="flex justify-between text-[9px] text-gray-600">
-            <span>{p.offset.toFixed(2)}m</span>
-            <button onClick={() => { const n = [...clipPlanes]; n[i] = { ...p, negative: !p.negative }; setClipPlanes(n); }}
-              className="text-gray-500 hover:text-gray-300 px-1 rounded">翻转</button>
-          </div>
-        </div>
-      ))}
+      <label className="flex items-center gap-1 mb-2">
+        <button onClick={() => setBoxClip({ ...boxClip, enabled: !boxClip.enabled })}
+          className={`w-4 h-4 rounded-[3px] text-[9px] flex items-center justify-center ${boxClip.enabled ? 'bg-green-500 text-white' : 'bg-gray-700 text-gray-400'}`}>
+          {boxClip.enabled ? '✓' : ''}</button>
+        <span className="text-gray-400 text-[10px]">启用裁剪盒</span>
+      </label>
 
-      <div className={`mt-2 p-1.5 rounded text-[10px] ${boxClip.enabled ? 'bg-green-500/10 border border-green-500/20' : 'bg-gray-800/30'}`}>
-        <div className="flex items-center gap-1 mb-1">
-          <button onClick={() => setBoxClip({ ...boxClip, enabled: !boxClip.enabled })}
-            className={`w-4 h-4 rounded-[3px] text-[9px] flex items-center justify-center ${boxClip.enabled ? 'bg-green-500 text-white' : 'bg-gray-700 text-gray-400'}`}>
-            {boxClip.enabled ? '✓' : ''}</button>
-          <span className="text-gray-400">包围盒</span>
+      {boxClip.enabled && (
+        <div className="grid grid-cols-2 gap-x-1 gap-y-0.5">
+          {(['min','max'] as const).flatMap(m => ['x','y','z'].map(a => {
+            const idx = {x:0,y:1,z:2}[a as 'x'|'y'|'z'];
+            return (
+              <div key={`${m}-${a}`} className="flex items-center gap-0.5">
+                <span className="text-gray-600 w-5 text-[9px]">{m}{a}</span>
+                <input type="number" min={-50} max={50} step={0.01} value={Number(boxClip[m][idx]).toFixed(2)}
+                  onChange={e => {
+                    const v = Number(e.target.value);
+                    if (isNaN(v)) return;
+                    const arr = [...boxClip[m]] as [number,number,number]; arr[idx]=v;
+                    setBoxClip({...boxClip,[m]:arr});
+                  }} className="flex-1 bg-gray-800 rounded px-1 py-0.5 text-white border border-gray-700 text-[9px]" />
+              </div>
+            );
+          }))}
         </div>
-        {boxClip.enabled && (
-          <div className="grid grid-cols-2 gap-x-1 gap-y-0.5">
-            {(['min','max'] as const).flatMap(m => ['x','y','z'].map(a => {
-              const idx = {x:0,y:1,z:2}[a as 'x'|'y'|'z'];
-              return (
-                <div key={`${m}-${a}`} className="flex items-center gap-0.5">
-                  <span className="text-gray-600 w-5">{m}{a}</span>
-                  <input type="number" min={-20} max={20} step={0.01} value={boxClip[m][idx]}
-                    onChange={e => {
-                      const arr = [...boxClip[m]] as [number,number,number]; arr[idx]=Number(e.target.value);
-                      setBoxClip({...boxClip,[m]:arr});
-                    }} className="flex-1 bg-gray-800 rounded px-1 py-0.5 text-white border border-gray-700 w-12 text-[9px]" />
-                </div>
-              );
-            }))}
-          </div>
-        )}
-      </div>
+      )}
     </Card>
   );
 }
