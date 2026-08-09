@@ -333,9 +333,11 @@ def poll_and_process():
                 # Aggressive GPU cleanup between jobs to prevent OOM
                 del glb_data
                 import gc; gc.collect()
-                if torch.cuda.is_available():
-                    torch.cuda.empty_cache()
-                    torch.cuda.reset_peak_memory_stats()
+                try:
+                    import torch as _torch
+                    _torch.cuda.empty_cache()
+                    _torch.cuda.reset_peak_memory_stats()
+                except: pass
 
             except Exception as e:
                 logger.exception(f"Job {job_id} failed")
