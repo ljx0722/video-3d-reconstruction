@@ -230,103 +230,30 @@ def process_video(video_path: str, settings: dict, job_id: str) -> bytes:
 
     # ── Compute world points AND stream per-batch to frontend ──────────
     if "world_points" not in vis_pred:
-        logger.info("Computing world_points + streaming per-batch...")
+        logger.info("Computing world_points_from_depth...")
         from lingbot_map.utils.geometry import unproject_depth_map_to_point_map
+        depth_t = vis_pred["depth"]; extrinsics = vis_pred["extrinsic"]; intrinsics = vis_pred["intrinsic"]
+        world_pts = unproject_depth_map_to_point_map(depth_t, extrinsics, intrinsics)
+        vis_pred["world_points_from_depth"] = world_pts
 
-        depth_t = vis_pred["depth"]  # (S, H, W, 1)
-        extrinsics = vis_pred["extrinsic"]  # (S, 3, 4) c2w
-        intrinsics = vis_pred["intrinsic"]  # (S, 3, 3)
-
-        S_d, H_d, W_d = depth_t.shape[0], depth_t.shape[1], depth_t.shape[2]
-
-        # Process in batches for streaming (every 8 frames = ~1.5s between updates)
-        batch_size = max(1, S_d // 15)
-        all_world = np.zeros((S_d, H_d, W_d, 3), dtype=np.float32)
-
-        batch_num = 0
-        for start in range(0, S_d, batch_size):
-            end = min(start + batch_size, S_d)
-            logger.info(f"  Batch {batch_num}: frames {start}-{end-1} of {S_d}")
-
-            # Compute world points for this batch
-            batch_depth = depth_t[start:end]
-            batch_ext = extrinsics[start:end]
-            batch_int = intrinsics[start:end] if intrinsics is not None else None
-
-            if batch_int is not None:
-                batch_world = unproject_depth_map_to_point_map(batch_depth, batch_ext, batch_int)
-            else:
-                # Fallback per-frame
-                batch_world = []
-                for fi in range(start, end):
-                    pts, _, _ = depth_to_world_coords_points(
-                        depth_t[fi].squeeze(-1), extrinsics[fi], intrinsics[fi],
-                    )
-                    batch_world.append(pts)
-                batch_world = np.stack(batch_world, axis=0)
-
-            all_world[start:end] = batch_world
-
-            # Stream this batch to frontend (downsampled + packed)
-            if settings.get("stream_enabled", True):
-                try:
-                    stride_stream = 8  # ~12K pts/batch, 15 batches = browser-friendly
-                    world_flat = batch_world[:, ::stride_stream, ::stride_stream].reshape(-1, 3)
-                    colors_flat = imgs_np[start:end, :, ::stride_stream, ::stride_stream]
-                    if colors_flat.shape[1] == 3:  # CHW → HWC
-                        colors_flat = colors_flat.transpose(0, 2, 3, 1)
-                    colors_flat = (colors_flat.reshape(-1, 3) * 255).astype(np.uint8)
-
-                    # Pack: [x,y,z,r,g,b] × N as float32
-                    packed = np.zeros((len(world_flat), 6), dtype=np.float32)
-                    packed[:, :3] = world_flat.astype(np.float32)
-                    packed[:, 3:] = colors_flat.astype(np.float32) / 255.0
-                    _stream_batch(job_id, batch_num, packed.tobytes(), len(world_flat))
-                except Exception:
-                    logger.warning(f"Stream batch {batch_num} failed", exc_info=True)
-
-            batch_num += 1
-
-        vis_pred["world_points_from_depth"] = all_world
-        _update_status(job_id, "processing", 0.85, f"计算世界坐标完成, 导出GLB...")
-        logger.info(f"world_points + streaming: {S_d}x{H_d}x{W_d}, {batch_num} batches sent")
-
-    # ── Export GLB ──────────────────────────────────────────────────
-    _update_status(job_id, "processing", 0.90, "导出GLB模型...")
-
-    # ── Export GLB via official predictions_to_glb ──────────────────────
+    _update_status(job_id, "processing", 0.85, "导出GLB模型...")
     from lingbot_map.vis.glb_export import predictions_to_glb
 
-    # Apply spatial stride for browser-friendly size (same as viser viewer's downsample_factor=10)
-    stride = 4  # ~1/16th the points (4x in each dimension)
+    stride = 4
     vis_pred_sub = {}
     for k, v in vis_pred.items():
-        if k == "world_points_from_depth" and v.ndim >= 4:
-            vis_pred_sub[k] = v[:, ::stride, ::stride]
-        elif k == "depth" and v.ndim >= 4:
+        if k in ("world_points_from_depth","depth") and v.ndim >= 4:
             vis_pred_sub[k] = v[:, ::stride, ::stride]
         elif k == "depth_conf" and v is not None and v.ndim >= 3:
             vis_pred_sub[k] = v[:, ::stride, ::stride]
         elif k == "images" and v.ndim >= 4:
-            if v.shape[1] == 3:  # (S, 3, H, W)
-                vis_pred_sub[k] = v[:, :, ::stride, ::stride]
-            else:
-                vis_pred_sub[k] = v[:, ::stride, ::stride]
+            vis_pred_sub[k] = v[:, :, ::stride, ::stride] if v.shape[1]==3 else v[:, ::stride, ::stride]
         else:
             vis_pred_sub[k] = v
-    logger.info(f"Spatial stride {stride}: {S_d}x{H_d}x{W_d} → "
-                f"{vis_pred_sub.get('depth', vis_pred.get('depth')).shape}")
-
-    num_frames_glb = vis_pred_sub.get("depth", vis_pred.get("depth", np.zeros(1))).shape[0]
-    logger.info(f"Exporting GLB with {num_frames_glb} frames, conf_thres=10 (keep top 90%)")
 
     glb_path = os.path.join(tmpdir, "output.glb")
-    scene = predictions_to_glb(
-        vis_pred_sub,
-        conf_thres=10,       # keep top 90% (official default)
-        show_cam=True,       # camera frustums
-        mask_sky=False,      # no sky mask for now
-    )
+    scene = predictions_to_glb(vis_pred_sub, conf_thres=10, show_cam=True, mask_sky=False)
+    scene.export(glb_path)
     # Read GLB into memory, cleanup temp dir
     with open(glb_path, "rb") as f:
         glb_data = f.read()
@@ -461,24 +388,3 @@ def _upload_result(job_id: str, glb_data: bytes):
                 raise
 
 
-def _stream_batch(job_id: str, batch_num: int, data: bytes, num_points: int):
-    """Upload a batch of point cloud data for live streaming to frontend."""
-    try:
-        req = urllib.request.Request(
-            f"{BACKEND_URL}/api/v1/gpu/stream/{job_id}?batch={batch_num}&count={num_points}",
-            data=data,
-            headers={
-                "Content-Type": "application/octet-stream",
-                "User-Agent": "gpu-worker/1.0",
-                "X-Batch-Num": str(batch_num),
-                "X-Point-Count": str(num_points),
-            },
-            method="POST",
-        )
-        urllib.request.urlopen(req, timeout=15)
-    except Exception as e:
-        logger.warning(f"Stream batch {batch_num} upload failed: {e}")
-
-
-if __name__ == "__main__":
-    poll_and_process()
