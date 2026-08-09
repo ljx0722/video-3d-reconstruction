@@ -1,6 +1,6 @@
 import { Suspense, useState, useCallback, useRef } from 'react';
 import { Canvas, useFrame } from '@react-three/fiber';
-import { OrbitControls, GizmoHelper, GizmoViewport, Grid, Html, Line, OrthographicCamera, PerspectiveCamera } from '@react-three/drei';
+import { TrackballControls, GizmoHelper, GizmoViewport, Grid, Html, Line, OrthographicCamera, PerspectiveCamera } from '@react-three/drei';
 import * as THREE from 'three';
 import { getResultUrl } from '../api/client';
 import ModelLoader from './ModelLoader';
@@ -95,23 +95,21 @@ function CameraTrail({ positions }: { positions: Float32Array }) {
   );
 }
 
-function ZoomAwareControls() {
+function AdaptiveControls() {
   const ref = useRef<any>(null);
 
-  useFrame(() => {
+  useFrame(({ camera }) => {
     if (ref.current) {
-      const d = ref.current.getDistance();
-      ref.current.zoomSpeed = Math.max(0.08, Math.min(12, d * 0.35));
+      const d = camera.position.length();
+      ref.current.rotateSpeed = Math.max(1.5, Math.min(20, d * 2.5));
+      ref.current.zoomSpeed = Math.max(0.5, Math.min(80, d * 6));
+      ref.current.panSpeed = Math.max(0.3, Math.min(15, d * 1.2));
     }
   });
 
   return (
-    <OrbitControls
+    <TrackballControls
       ref={ref}
-      enableDamping dampingFactor={0.08}
-      minDistance={0.01} maxDistance={500}
-      minPolarAngle={0} maxPolarAngle={Math.PI}
-      minAzimuthAngle={-Infinity} maxAzimuthAngle={Infinity}
       target={[0, 0, 0]}
     />
   );
@@ -197,7 +195,7 @@ export default function ViewerCanvas({
         <GizmoViewport axisColors={['#ef4444', '#22c55e', '#3b82f6']} labelColor="#9ca3af" />
       </GizmoHelper>
 
-      <ZoomAwareControls />
+      <AdaptiveControls />
 
       <EDLEffect edlStrength={edlStrength} />
     </Canvas>
