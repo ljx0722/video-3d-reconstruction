@@ -112,7 +112,7 @@ def process_video(video_path: str, settings: dict, job_id: str) -> bytes:
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
 
     # Auto-cap to ~300 frames for reasonable processing time (~60s)
-    MAX_TARGET_FRAMES = 300
+    MAX_TARGET_FRAMES = 400
     desired_fps = fps
     interval = max(1, round(src_fps / desired_fps))
     estimated_frames = total_frames // interval
@@ -239,7 +239,7 @@ def process_video(video_path: str, settings: dict, job_id: str) -> bytes:
     _update_status(job_id, "processing", 0.85, "导出GLB模型...")
     from lingbot_map.vis.glb_export import predictions_to_glb
 
-    stride = 4
+    stride = 3
     vis_pred_sub = {}
     for k, v in vis_pred.items():
         if k in ("world_points_from_depth","depth") and v.ndim >= 4:
