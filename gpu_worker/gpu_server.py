@@ -89,8 +89,8 @@ def _find_checkpoint():
 
 
 # ── Inference pipeline ──────────────────────────────────────────────────────
-def process_video(video_path: str, settings: dict) -> str:
-    """Run lingbot-map inference and export GLB following demo.py pipeline exactly."""
+def process_video(video_path: str, settings: dict) -> bytes:
+    """Run lingbot-map inference and return GLB bytes. Cleans temp dirs after."""
     import torch
     import cv2
     import numpy as np
@@ -260,11 +260,17 @@ def process_video(video_path: str, settings: dict) -> str:
         show_cam=True,       # camera frustums
         mask_sky=False,      # no sky mask for now
     )
-    scene.export(glb_path)
-    size_mb = os.path.getsize(glb_path) / (1024 * 1024)
+    # Read GLB into memory, cleanup temp dir
+    with open(glb_path, "rb") as f:
+        glb_data = f.read()
+
+    import shutil as _shutil
+    _shutil.rmtree(tmpdir, ignore_errors=True)
+
+    size_mb = len(glb_data) / (1024 * 1024)
     logger.info(f"GLB exported: {size_mb:.1f} MB, {num_frames} frames, elapsed={elapsed:.1f}s")
 
-    return glb_path
+    return glb_data
 
 def poll_and_process():
     """Main loop: poll for pending jobs, process them, upload results."""
@@ -318,18 +324,13 @@ def poll_and_process():
                 _update_status(job_id, "processing", 0.1)
 
                 # Run inference
-                glb_path = process_video(video_tmp, settings)
+                glb_data = process_video(video_tmp, settings)
                 os.unlink(video_tmp)
 
                 # Upload GLB result
-                with open(glb_path, "rb") as f:
-                    glb_data = f.read()
-
                 _update_status(job_id, "processing", 0.9)
                 _upload_result(job_id, glb_data)
 
-                # Clean up
-                os.unlink(glb_path)
                 logger.info(f"Job {job_id} completed ({len(glb_data)/1024/1024:.1f} MB)")
 
             except Exception as e:
