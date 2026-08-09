@@ -1,6 +1,6 @@
-import { Suspense } from 'react';
+import { Suspense, useState, useCallback } from 'react';
 import { Canvas } from '@react-three/fiber';
-import { OrbitControls, GizmoHelper, GizmoViewport, Grid } from '@react-three/drei';
+import { OrbitControls, GizmoHelper, GizmoViewport, Grid, Html, Line } from '@react-three/drei';
 import * as THREE from 'three';
 import { getResultUrl } from '../api/client';
 import ModelLoader from './ModelLoader';
@@ -16,19 +16,16 @@ interface Props {
   orthographic?: boolean;
   splatMode?: boolean;
   showGrid?: boolean;
+  showTrajectory?: boolean;
 }
 
 function BoxWireframe({ boxClip }: { boxClip: BoxClip }) {
   if (!boxClip.enabled) return null;
   const size: [number,number,number] = [
-    boxClip.max[0]-boxClip.min[0],
-    boxClip.max[1]-boxClip.min[1],
-    boxClip.max[2]-boxClip.min[2],
+    boxClip.max[0]-boxClip.min[0], boxClip.max[1]-boxClip.min[1], boxClip.max[2]-boxClip.min[2],
   ];
   const center: [number,number,number] = [
-    (boxClip.max[0]+boxClip.min[0])/2,
-    (boxClip.max[1]+boxClip.min[1])/2,
-    (boxClip.max[2]+boxClip.min[2])/2,
+    (boxClip.max[0]+boxClip.min[0])/2, (boxClip.max[1]+boxClip.min[1])/2, (boxClip.max[2]+boxClip.min[2])/2,
   ];
   const geom = new THREE.BoxGeometry(size[0], size[1], size[2]);
   geom.translate(center[0], center[1], center[2]);
@@ -40,44 +37,95 @@ function BoxWireframe({ boxClip }: { boxClip: BoxClip }) {
   );
 }
 
-function AxesHelper() {
+function CameraTrail({ positions }: { positions: Float32Array }) {
+  const n = positions.length / 3;
+  if (n < 2) return null;
+
+  // Sort positions by spatial proximity (nearest-neighbor chain)
+  const pts: THREE.Vector3[] = [];
+  for (let i = 0; i < n; i++) {
+    pts.push(new THREE.Vector3(positions[i*3], positions[i*3+1], positions[i*3+2]));
+  }
+
+  // Simple spatial sort: start from first, chain nearest neighbors
+  const sorted: THREE.Vector3[] = [pts[0]];
+  const remaining = new Set(pts.slice(1).map((_, i) => i + 1));
+  while (remaining.size > 0) {
+    const last = sorted[sorted.length - 1];
+    let bestIdx = -1;
+    let bestDist = Infinity;
+    for (const idx of remaining) {
+      const d = last.distanceToSquared(pts[idx]);
+      if (d < bestDist) { bestDist = d; bestIdx = idx; }
+    }
+    sorted.push(pts[bestIdx]);
+    remaining.delete(bestIdx);
+  }
+
+  const linePoints = sorted.map(p => [p.x, p.y, p.z] as [number, number, number]);
+
+  // Colors: gradient blue → purple → red
+  const colors = sorted.map((_, i) => {
+    const t = i / Math.max(1, sorted.length - 1);
+    const r = t;
+    const g = 0.2 + (1 - Math.abs(t - 0.5) * 2) * 0.4;
+    const b = 1 - t;
+    return [r, g, b] as [number, number, number];
+  });
+
+  const center = sorted[Math.floor(sorted.length / 2)];
+
   return (
     <group>
-      {/* X - Red */}
-      <mesh position={[1.5, 0, 0]}>
-        <boxGeometry args={[3, 0.02, 0.02]} />
-        <meshBasicMaterial color="#ef4444" />
+      <Line points={linePoints} color="white" lineWidth={1.5} vertexColors={colors} />
+      {/* Trajectory label */}
+      <Html position={[center.x, center.y + 0.3, center.z]} center>
+        <div className="bg-gray-900/80 backdrop-blur px-2 py-0.5 rounded text-[10px] text-gray-400 whitespace-nowrap border border-gray-700 select-none">
+          摄像机轨迹 · {n} 帧
+        </div>
+      </Html>
+      {/* Start marker */}
+      <mesh position={sorted[0].toArray()}>
+        <sphereGeometry args={[0.025, 8, 8]} />
+        <meshBasicMaterial color="#3B82F6" />
       </mesh>
-      {/* Y - Green */}
-      <mesh position={[0, 1.5, 0]}>
-        <boxGeometry args={[0.02, 3, 0.02]} />
-        <meshBasicMaterial color="#22c55e" />
+      {/* End marker */}
+      <mesh position={sorted[sorted.length - 1].toArray()}>
+        <sphereGeometry args={[0.025, 8, 8]} />
+        <meshBasicMaterial color="#EF4444" />
       </mesh>
-      {/* Z - Blue */}
-      <mesh position={[0, 0, 1.5]}>
-        <boxGeometry args={[0.02, 0.02, 3]} />
-        <meshBasicMaterial color="#3b82f6" />
-      </mesh>
+    </group>
+  );
+}
+
+function AxesHelper3D() {
+  return (
+    <group>
+      <mesh position={[1.5, 0, 0]}><boxGeometry args={[3, 0.02, 0.02]} /><meshBasicMaterial color="#ef4444" /></mesh>
+      <mesh position={[0, 1.5, 0]}><boxGeometry args={[0.02, 3, 0.02]} /><meshBasicMaterial color="#22c55e" /></mesh>
+      <mesh position={[0, 0, 1.5]}><boxGeometry args={[0.02, 0.02, 3]} /><meshBasicMaterial color="#3b82f6" /></mesh>
     </group>
   );
 }
 
 export default function ViewerCanvas({
   jobId, pointSize, opacity = 1, onPointsReady,
-  boxClip, showAxes, orthographic, splatMode, showGrid,
+  boxClip, showAxes, orthographic, splatMode, showGrid, showTrajectory = true,
 }: Props) {
+  const [camPositions, setCamPositions] = useState<Float32Array | null>(null);
   const defaultBox: BoxClip = boxClip || { enabled: false, min: [-1, -0.5, -1], max: [1, 0.5, 1] };
   const activeBox = boxClip || defaultBox;
 
-  // Build THREE clipping planes from box bounds
+  const handleCameras = useCallback((pos: Float32Array) => setCamPositions(pos), []);
+
   const threeClipPlanes: THREE.Plane[] = [];
   if (activeBox.enabled) {
-    threeClipPlanes.push(new THREE.Plane(new THREE.Vector3( 1, 0, 0), -activeBox.min[0])); // +X min
-    threeClipPlanes.push(new THREE.Plane(new THREE.Vector3(-1, 0, 0),  activeBox.max[0])); // -X max
-    threeClipPlanes.push(new THREE.Plane(new THREE.Vector3( 0, 1, 0), -activeBox.min[1])); // +Y min
-    threeClipPlanes.push(new THREE.Plane(new THREE.Vector3( 0,-1, 0),  activeBox.max[1])); // -Y max
-    threeClipPlanes.push(new THREE.Plane(new THREE.Vector3( 0, 0, 1), -activeBox.min[2])); // +Z min
-    threeClipPlanes.push(new THREE.Plane(new THREE.Vector3( 0, 0,-1),  activeBox.max[2])); // -Z max
+    threeClipPlanes.push(new THREE.Plane(new THREE.Vector3( 1,0,0), -activeBox.min[0]));
+    threeClipPlanes.push(new THREE.Plane(new THREE.Vector3(-1,0,0),  activeBox.max[0]));
+    threeClipPlanes.push(new THREE.Plane(new THREE.Vector3( 0,1,0), -activeBox.min[1]));
+    threeClipPlanes.push(new THREE.Plane(new THREE.Vector3( 0,-1,0), activeBox.max[1]));
+    threeClipPlanes.push(new THREE.Plane(new THREE.Vector3( 0,0,1), -activeBox.min[2]));
+    threeClipPlanes.push(new THREE.Plane(new THREE.Vector3( 0,0,-1),activeBox.max[2]));
   }
 
   return (
@@ -100,28 +148,27 @@ export default function ViewerCanvas({
           pointSize={pointSize}
           opacity={opacity}
           onPointsReady={onPointsReady}
+          onCameraPositions={handleCameras}
           clipPlanes={threeClipPlanes}
           splatMode={splatMode}
         />
       </Suspense>
 
-      {/* Visual guides for clipping planes */}
+      {camPositions && showTrajectory && <CameraTrail positions={camPositions} />}
+
       <BoxWireframe boxClip={activeBox} />
 
-      {/* Grid */}
       {showGrid && <Grid infiniteGrid fadeDistance={50} fadeStrength={5} sectionSize={1} cellSize={0.5} sectionColor="#374151" cellColor="#1f2937" />}
 
-      {/* Axis helper */}
-      {showAxes && <AxesHelper />}
+      {showAxes && <AxesHelper3D />}
 
-      {/* Orientation Cube - top right */}
       <GizmoHelper alignment="top-right" margin={[80, 80]}>
         <GizmoViewport axisColors={['#ef4444', '#22c55e', '#3b82f6']} labelColor="#9ca3af" />
       </GizmoHelper>
 
       <OrbitControls
         enableDamping dampingFactor={0.08}
-        minDistance={0.05} maxDistance={200}
+        minDistance={0.01} maxDistance={500}
         minPolarAngle={0} maxPolarAngle={Math.PI}
         minAzimuthAngle={-Infinity} maxAzimuthAngle={Infinity}
         target={[0, 0, 0]}

@@ -1,4 +1,4 @@
-import { useMemo, useEffect } from 'react';
+import { useMemo, useEffect, useState } from 'react';
 import { useGLTF } from '@react-three/drei';
 import * as THREE from 'three';
 
@@ -7,50 +7,66 @@ interface Props {
   pointSize: number;
   opacity?: number;
   onPointsReady?: (mesh: THREE.Points) => void;
+  onCameraPositions?: (positions: Float32Array) => void;
   clipPlanes?: THREE.Plane[];
   splatMode?: boolean;
 }
 
-export default function ModelLoader({ url, pointSize, opacity = 1, onPointsReady, clipPlanes, splatMode }: Props) {
+export default function ModelLoader({ url, pointSize, opacity = 1, onPointsReady, onCameraPositions, clipPlanes, splatMode }: Props) {
   const { scene } = useGLTF(url);
+  const [splatTex] = useState(() => {
+    const c = document.createElement('canvas');
+    c.width = c.height = 32;
+    const ctx = c.getContext('2d')!;
+    const g = ctx.createRadialGradient(16, 16, 0, 16, 16, 16);
+    g.addColorStop(0, 'rgba(255,255,255,1)');
+    g.addColorStop(0.4, 'rgba(255,255,255,0.6)');
+    g.addColorStop(0.8, 'rgba(255,255,255,0.1)');
+    g.addColorStop(1, 'rgba(255,255,255,0)');
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, 32, 32);
+    return new THREE.CanvasTexture(c);
+  });
 
   const points = useMemo(() => {
-    const positions: number[] = [];
-    const colors: number[] = [];
+    const pcPos: number[] = [];
+    const pcCol: number[] = [];
+    const camPos: number[] = [];
 
     scene.traverse((child: any) => {
       const geo = child.geometry as THREE.BufferGeometry | undefined;
       if (!geo || !geo.getAttribute) return;
       const pos = geo.getAttribute('position');
-      const col = geo.getAttribute('color');
       if (!pos) return;
-      for (let i = 0; i < pos.count; i++) {
-        positions.push(pos.getX(i), pos.getY(i), pos.getZ(i));
-        colors.push(col ? col.getX(i) : 1, col ? col.getY(i) : 1, col ? col.getZ(i) : 1);
+
+      if (pos.count < 50) {
+        // Camera cone — compute centroid
+        let cx = 0, cy = 0, cz = 0;
+        for (let i = 0; i < pos.count; i++) {
+          cx += pos.getX(i); cy += pos.getY(i); cz += pos.getZ(i);
+        }
+        camPos.push(cx / pos.count, cy / pos.count, cz / pos.count);
+      } else {
+        // Point cloud
+        const col = geo.getAttribute('color');
+        for (let i = 0; i < pos.count; i++) {
+          pcPos.push(pos.getX(i), pos.getY(i), pos.getZ(i));
+          pcCol.push(col ? col.getX(i) : 1, col ? col.getY(i) : 1, col ? col.getZ(i) : 1);
+        }
       }
     });
 
-    if (positions.length === 0) return null;
+    // Notify camera positions (sorted by spatial proximity)
+    if (camPos.length > 0 && onCameraPositions) {
+      const camArr = new Float32Array(camPos);
+      onCameraPositions(camArr);
+    }
+
+    if (pcPos.length === 0) return null;
 
     const geo = new THREE.BufferGeometry();
-    geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(positions), 3));
-    geo.setAttribute('color', new THREE.BufferAttribute(new Float32Array(colors), 3));
-
-    // Create circular splat texture for gaussian-like rendering
-    let map: THREE.Texture | undefined;
-    if (splatMode) {
-      const canvas = document.createElement('canvas');
-      canvas.width = canvas.height = 64;
-      const ctx = canvas.getContext('2d')!;
-      const gradient = ctx.createRadialGradient(32, 32, 0, 32, 32, 32);
-      gradient.addColorStop(0, 'rgba(255,255,255,1)');
-      gradient.addColorStop(0.3, 'rgba(255,255,255,0.9)');
-      gradient.addColorStop(0.6, 'rgba(255,255,255,0.3)');
-      gradient.addColorStop(1, 'rgba(255,255,255,0)');
-      ctx.fillStyle = gradient;
-      ctx.fillRect(0, 0, 64, 64);
-      map = new THREE.CanvasTexture(canvas);
-    }
+    geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(pcPos), 3));
+    geo.setAttribute('color', new THREE.BufferAttribute(new Float32Array(pcCol), 3));
 
     const mat = new THREE.PointsMaterial({
       size: splatMode ? pointSize * 4 : pointSize,
@@ -62,22 +78,20 @@ export default function ModelLoader({ url, pointSize, opacity = 1, onPointsReady
       opacity,
       clippingPlanes: clipPlanes || [],
       clipShadows: true,
-      map: map || undefined,
+      map: splatMode ? splatTex : null,
       depthTest: true,
     });
 
     return new THREE.Points(geo, mat);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [scene]);
 
-  // Update point size
   useEffect(() => {
     if (points) {
-      (points.material as THREE.PointsMaterial).size = splatMode ? pointSize * 4 : pointSize;
+      const mat = points.material as THREE.PointsMaterial;
+      mat.size = splatMode ? pointSize * 4 : pointSize;
     }
   }, [pointSize, points, splatMode]);
 
-  // Update opacity
   useEffect(() => {
     if (points) {
       const mat = points.material as THREE.PointsMaterial;
@@ -85,35 +99,21 @@ export default function ModelLoader({ url, pointSize, opacity = 1, onPointsReady
     }
   }, [opacity, points]);
 
-  // Update clipping planes
   useEffect(() => {
     if (points) {
       (points.material as THREE.PointsMaterial).clippingPlanes = clipPlanes || [];
     }
   }, [clipPlanes, points]);
 
-  // Update splat mode reactively
   useEffect(() => {
     if (points) {
       const mat = points.material as THREE.PointsMaterial;
       if (splatMode) {
-        const canvas = document.createElement('canvas');
-        canvas.width = canvas.height = 64;
-        const ctx = canvas.getContext('2d')!;
-        const gradient = ctx.createRadialGradient(32, 32, 0, 32, 32, 32);
-        gradient.addColorStop(0, 'rgba(255,255,255,1)');
-        gradient.addColorStop(0.3, 'rgba(255,255,255,0.9)');
-        gradient.addColorStop(0.6, 'rgba(255,255,255,0.3)');
-        gradient.addColorStop(1, 'rgba(255,255,255,0)');
-        ctx.fillStyle = gradient;
-        ctx.fillRect(0, 0, 64, 64);
-        mat.map = new THREE.CanvasTexture(canvas);
-        mat.size = pointSize * 4;
+        mat.map = splatTex;
         mat.blending = THREE.AdditiveBlending;
         mat.depthWrite = false;
       } else {
         mat.map = null;
-        mat.size = pointSize;
         mat.blending = THREE.NormalBlending;
         mat.depthWrite = true;
       }
@@ -121,11 +121,8 @@ export default function ModelLoader({ url, pointSize, opacity = 1, onPointsReady
     }
   }, [splatMode, pointSize, points]);
 
-  // Notify parent
   useEffect(() => {
-    if (points && onPointsReady) {
-      onPointsReady(points);
-    }
+    if (points && onPointsReady) onPointsReady(points);
   }, [points, onPointsReady]);
 
   if (!points) return null;
