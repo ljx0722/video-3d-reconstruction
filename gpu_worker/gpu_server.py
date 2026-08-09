@@ -174,12 +174,7 @@ def process_video(video_path: str, settings: dict, job_id: str) -> bytes:
         logger.info(f"GPU peak: {torch.cuda.max_memory_allocated()/1e9:.2f} GB")
         torch.cuda.reset_peak_memory_stats()
 
-    # Free GPU images before CPU postprocessing to reduce peak VRAM
-    del images
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
-
-    # Free GPU images after extracting shape info
+    # Free GPU images after extracting shape info for postprocess
     img_h, img_w = images.shape[-2], images.shape[-1]
     del images
     if torch.cuda.is_available():
