@@ -110,18 +110,32 @@ def process_video(video_path: str, settings: dict, job_id: str) -> bytes:
     cap = cv2.VideoCapture(video_path)
     src_fps = cap.get(cv2.CAP_PROP_FPS) or 30
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    video_duration = total_frames / src_fps if src_fps > 0 else 0
 
-    # Auto-cap to ~300 frames for reasonable processing time (~60s)
-    MAX_TARGET_FRAMES = 400
+    # Dynamic frame budget based on video duration
+    # Short videos (<30s): up to 200 frames → stride 2 (dense)
+    # Medium (30-90s): up to 400 frames → stride 3
+    # Long (>90s): up to 600 frames → stride 4
+    if video_duration < 30:
+        max_target, dynamic_stride = 200, 2
+    elif video_duration < 90:
+        max_target, dynamic_stride = 400, 3
+    else:
+        max_target, dynamic_stride = 600, 4
+
     desired_fps = fps
     interval = max(1, round(src_fps / desired_fps))
     estimated_frames = total_frames // interval
-    if estimated_frames > MAX_TARGET_FRAMES:
-        # Adjust fps up to reduce extracted frames
-        desired_fps = max(1, src_fps * MAX_TARGET_FRAMES / total_frames)
+    if estimated_frames > max_target:
+        desired_fps = max(1, src_fps * max_target / total_frames)
         interval = max(1, round(src_fps / desired_fps))
         estimated_frames = total_frames // interval
-        logger.info(f"Auto-capped frames: {total_frames} total -> ~{estimated_frames} (fps={desired_fps:.1f})")
+        logger.info(f"Video {video_duration:.0f}s: {total_frames} total → ~{estimated_frames} frames (dynamic cap)")
+    else:
+        logger.info(f"Video {video_duration:.0f}s: {total_frames} total → ~{estimated_frames} frames")
+
+    # Store dynamic_stride for GLB export
+    settings["_dynamic_stride"] = dynamic_stride
 
     tmpdir = tempfile.mkdtemp()
     frame_paths = []
@@ -239,7 +253,7 @@ def process_video(video_path: str, settings: dict, job_id: str) -> bytes:
     _update_status(job_id, "processing", 0.85, "导出GLB模型...")
     from lingbot_map.vis.glb_export import predictions_to_glb
 
-    stride = 3
+    stride = settings.get("_dynamic_stride", 3)
     vis_pred_sub = {}
     for k, v in vis_pred.items():
         if k in ("world_points_from_depth","depth") and v.ndim >= 4:
