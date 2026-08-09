@@ -21,7 +21,7 @@ logger = logging.getLogger("gpu-worker")
 
 BACKEND_URL = os.environ.get("SEALOS_BACKEND_URL", "https://video2gauss.sealoshzh.site").rstrip("/")
 POLL_INTERVAL = int(os.environ.get("POLL_INTERVAL", "5"))
-CHECKPOINT_PATH = os.environ.get("MODEL_PATH", "./checkpoint/lingbot-map-long.pt")
+CHECKPOINT_PATH = os.environ.get("MODEL_PATH", "./checkpoint/lingbot-map.pt")
 
 # ── Model loading (lazy, loaded on first request) ──────────────────────────
 _model = None
@@ -53,7 +53,7 @@ def load_model():
         enable_3d_rope=True, max_frame_num=1024,
         kv_cache_sliding_window=64, kv_cache_scale_frames=8,
         kv_cache_cross_frame_special=True, kv_cache_include_scale_frames=True,
-        use_sdpa=True, camera_num_iterations=4,
+        use_sdpa=False, camera_num_iterations=4,
     )
 
     ckpt_path = _find_checkpoint()
@@ -207,129 +207,62 @@ def process_video(video_path: str, settings: dict) -> str:
         imgs_np = imgs_np.detach().cpu().numpy()
     vis_pred["images"] = imgs_np
 
-    # ── Compute world_points_from_depth (standard method) ───────────────
+    # ── Compute world_points_from_depth using official geometry utility ──
+    # This mirrors PointCloudViewer.parse_pc_data(): depth → world coords
+    # for ALL frames (no keyframe subsampling), with absolute conf threshold
     if "world_points" not in vis_pred:
-        logger.info("Computing world_points_from_depth...")
-        depth = vis_pred["depth"]
-        extrinsics = vis_pred["extrinsic"]
-        intrinsics = vis_pred.get("intrinsic")
-        depth_conf_data = vis_pred.get("depth_conf")
+        logger.info("Computing world_points_from_depth via official unproject...")
+        from lingbot_map.utils.geometry import unproject_depth_map_to_point_map
 
-        S, H, W = depth.shape[0], depth.shape[1], depth.shape[2]
+        # Unproject ALL frames at full resolution
+        depth_t = vis_pred["depth"]  # (S, H, W, 1)
+        extrinsics = vis_pred["extrinsic"]  # (S, 3, 4) c2w
+        intrinsics = vis_pred["intrinsic"]  # (S, 3, 3)
 
-        # Take ~20 evenly-spaced keyframes for good coverage, less overlap
-        keyframe_step = max(1, S // 20)
-        keyframe_idx = list(range(0, S, keyframe_step))
-        n_keyframes = len(keyframe_idx)
-        logger.info(f"Keyframes: {S} -> {n_keyframes}")
+        # Official function: depth → world coords per frame
+        world_pts = unproject_depth_map_to_point_map(
+            depth_t, extrinsics, intrinsics,
+        )
+        vis_pred["world_points_from_depth"] = world_pts
+        S_d, H_d, W_d = world_pts.shape[:3]
+        logger.info(f"world_points_from_depth: {S_d}x{H_d}x{W_d} (all frames)")
 
-        all_world_pts = []
-        all_colors_list = []
-        all_conf_list = []  # per-point confidence for winner-take-all voxel merge
+    # ── Export GLB via official predictions_to_glb ──────────────────────
+    from lingbot_map.vis.glb_export import predictions_to_glb
 
-        for fi in keyframe_idx:
-            ext = extrinsics[fi]; R, T = ext[:, :3], ext[:, 3]
-            d = depth[fi, :, :, 0]
-            intr = intrinsics[fi] if intrinsics.ndim >= 3 else intrinsics
-            fx, fy = intr[0, 0], intr[1, 1]
-            cx, cy = intr[0, 2], intr[1, 2]
-
-            yy, xx = np.mgrid[0:H, 0:W]
-            z = d
-            x_cam = (xx - cx) * z / fx
-            y_cam = (yy - cy) * z / fy
-            pts_cam = np.stack([x_cam, y_cam, z], axis=-1)
-            pts_w = pts_cam @ R.T + T
-
-            # Get colors
-            img = vis_pred["images"]
-            img_f = img[fi].transpose(1, 2, 0) if img.shape[1] == 3 else img[fi]
-
-            # Depth validity
-            z_mask = (z > 0.1) & (z < 80)
-
-            # Strict confidence: keep only the top 25% most confident pixels this frame
-            # This removes noisy depth estimates that cause ghosting
-            if depth_conf_data is not None:
-                cf_frame = depth_conf_data[fi]
-                cf_pct = np.percentile(cf_frame[cf_frame > 0], 75)  # top 25%
-                cf_mask = cf_frame > cf_pct
-                valid = z_mask & cf_mask
-                cf_valid = cf_frame[valid]
+    # Apply spatial stride for browser-friendly size (same as viser viewer's downsample_factor=10)
+    stride = 4  # ~1/16th the points (4x in each dimension)
+    vis_pred_sub = {}
+    for k, v in vis_pred.items():
+        if k == "world_points_from_depth" and v.ndim >= 4:
+            vis_pred_sub[k] = v[:, ::stride, ::stride]
+        elif k == "depth" and v.ndim >= 4:
+            vis_pred_sub[k] = v[:, ::stride, ::stride]
+        elif k == "depth_conf" and v is not None and v.ndim >= 3:
+            vis_pred_sub[k] = v[:, ::stride, ::stride]
+        elif k == "images" and v.ndim >= 4:
+            if v.shape[1] == 3:  # (S, 3, H, W)
+                vis_pred_sub[k] = v[:, :, ::stride, ::stride]
             else:
-                valid = z_mask
-                cf_valid = np.ones(int(valid.sum()), dtype=np.float32)
+                vis_pred_sub[k] = v[:, ::stride, ::stride]
+        else:
+            vis_pred_sub[k] = v
+    logger.info(f"Spatial stride {stride}: {S_d}x{H_d}x{W_d} → "
+                f"{vis_pred_sub.get('depth', vis_pred.get('depth')).shape}")
 
-            all_world_pts.append(pts_w[valid])
-            all_colors_list.append((img_f[valid] * 255).astype(np.uint8))
-            all_conf_list.append(cf_valid)
+    num_frames_glb = vis_pred_sub.get("depth", vis_pred.get("depth", np.zeros(1))).shape[0]
+    logger.info(f"Exporting GLB with {num_frames_glb} frames, conf_thres=10 (keep top 90%)")
 
-        vertices = np.concatenate(all_world_pts, axis=0)
-        colors = np.concatenate(all_colors_list, axis=0)
-        confs = np.concatenate(all_conf_list, axis=0)
-        logger.info(f"Raw points (keyframes only): {len(vertices)}")
-
-        # ── Scene-adaptive grid dedup ────────────────────────────────────
-        # Compute scene extent, use 0.1% of diagonal as minimum cell size
-        bbox_min = vertices.min(axis=0)
-        bbox_max = vertices.max(axis=0)
-        scene_diag = float(np.linalg.norm(bbox_max - bbox_min))
-        # Cell size: 0.3% of scene diagonal to catch pose drift between frames,
-        # bounded to [5mm, 5cm] so it works for both small objects and outdoor scenes
-        cell = max(0.005, min(0.05, scene_diag * 0.003))
-        logger.info(f"Scene: {scene_diag:.2f}m → cell: {cell*1000:.1f}mm")
-
-        # Grid-based winner-take-all: in each cell, keep ONLY the highest-confidence point
-        vk = np.floor(vertices / cell).astype(np.int64)
-        best: dict = {}
-        for i in range(len(vertices)):
-            k = (vk[i, 0], vk[i, 1], vk[i, 2])
-            ci = float(confs[i])
-            if k not in best or ci > best[k][0]:
-                best[k] = (ci, i)
-
-        before = len(vertices)
-        indices = [v[1] for v in best.values()]
-        vertices = vertices[indices]
-        colors = colors[indices]
-        logger.info(f"Adaptive grid ({cell*1000:.1f}mm): {before} → {len(vertices)} points")
-        # cKDTree O(n²) — removed. Grid WTA is O(n). For scenes where many
-        # frames overlap the same area, the grid naturally collapses redundant
-        # observations into single cells. The adaptive cell size ensures small
-        # objects get fine resolution (3mm) while outdoor scenes get coarser
-        # treatment (up to 3cm) — preventing both ghosting AND under-sampling.
-
-        # Cap for browser rendering
-        if len(vertices) > 1200000:
-            idx = np.random.choice(len(vertices), 1200000, replace=False)
-            vertices = vertices[idx]; colors = colors[idx]
-            logger.info(f"Capped to 800K points")
-
-    # ── Export GLB via trimesh ─────────────────────────────────────────
     glb_path = os.path.join(tmpdir, "output.glb")
-    scene = trimesh.Scene()
-    pc = trimesh.PointCloud(vertices=vertices, colors=colors.astype(np.uint8))
-    scene.add_geometry(pc)
-    centroid = vertices.mean(axis=0)
-    scene.apply_translation(-centroid)
-
-    # Camera trail as small spheres
-    cam_positions = []
-    for fi in keyframe_idx:
-        ext = extrinsics[fi]
-        cam_positions.append(ext[:, 3])
-    cam_arr = np.array(cam_positions)
-    cam_arr_centered = cam_arr - centroid
-    for i, cp in enumerate(cam_arr_centered):
-        s_t = trimesh.creation.icosphere(subdivisions=2, radius=0.01)
-        t_c = i / max(1, len(cam_arr_centered) - 1)
-        s_t.visual.vertex_colors = np.tile([int(255*(1-t_c)), 40, int(255*t_c)], (len(s_t.vertices), 1)).astype(np.uint8)
-        s_t.apply_translation(cp.tolist())
-        scene.add_geometry(s_t)
-
+    scene = predictions_to_glb(
+        vis_pred_sub,
+        conf_thres=10,       # keep top 90% (official default)
+        show_cam=True,       # camera frustums
+        mask_sky=False,      # no sky mask for now
+    )
     scene.export(glb_path)
     size_mb = os.path.getsize(glb_path) / (1024 * 1024)
-    logger.info(f"GLB exported: {size_mb:.1f} MB, {n_keyframes} keyframes, elapsed={elapsed:.1f}s")
+    logger.info(f"GLB exported: {size_mb:.1f} MB, {num_frames} frames, elapsed={elapsed:.1f}s")
 
     return glb_path
 
