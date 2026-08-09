@@ -53,7 +53,7 @@ def load_model():
         enable_3d_rope=True, max_frame_num=1024,
         kv_cache_sliding_window=64, kv_cache_scale_frames=8,
         kv_cache_cross_frame_special=True, kv_cache_include_scale_frames=True,
-        use_sdpa=False, camera_num_iterations=4,
+        use_sdpa=True, camera_num_iterations=4,
     )
 
     ckpt_path = _find_checkpoint()
