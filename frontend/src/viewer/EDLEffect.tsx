@@ -1,30 +1,22 @@
-import { EffectComposer, Bloom, BrightnessContrast, Noise } from '@react-three/postprocessing';
+import { EffectComposer, Bloom } from '@react-three/postprocessing';
 import { BlendFunction } from 'postprocessing';
 
 interface EDLProps {
   edlStrength?: number;
 }
 
-export default function EDLEffect({ edlStrength = 0.4 }: EDLProps) {
+export default function EDLEffect({ edlStrength = 0 }: EDLProps) {
+  if (edlStrength <= 0.01) return null;
+
   return (
     <EffectComposer enabled multisampling={0}>
-      {/* Bloom for specular highlights (Potree-like glow) */}
       <Bloom
-        luminanceThreshold={0.2}
-        luminanceSmoothing={0.9}
-        intensity={edlStrength * 0.6}
-        mipmapBlur
+        luminanceThreshold={0.4}
+        luminanceSmoothing={0.7}
+        intensity={edlStrength * 0.3}
+        mipmapBlur={false}
+        blendFunction={BlendFunction.SCREEN}
       />
-
-      {/* Contrast boost for edge definition */}
-      <BrightnessContrast
-        brightness={0.02}
-        contrast={0.15 + edlStrength * 0.1}
-        blendFunction={BlendFunction.NORMAL}
-      />
-
-      {/* Subtle noise dithering to break up flat color bands */}
-      <Noise premultiply blendFunction={BlendFunction.SRC} opacity={0.008} />
     </EffectComposer>
   );
 }

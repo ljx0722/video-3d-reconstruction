@@ -8,7 +8,7 @@ import ControlsPanel from './ControlsPanel';
 import { type BoxClip } from './Toolbar';
 import type { Job } from '../types';
 
-const POINT_SIZE = 0.008;
+const POINT_SIZE = 0.004;
 const statusSteps = [
   { label: '上传视频' }, { label: '等待处理' }, { label: 'GPU 推理计算中' },
   { label: '导出 3D 模型' }, { label: '重建完成' },
@@ -29,7 +29,7 @@ export default function ViewerPage() {
   const [splatMode, setSplatMode] = useState(false);
   const [brightness, setBrightness] = useState(1.0);
   const [showGrid, setShowGrid] = useState(false);
-  const [edlStrength, setEdlStrength] = useState(0.4);
+  const [edlStrength, setEdlStrength] = useState(0.0);
 
   // Processing
   const [pointCount, setPointCount] = useState(0);
