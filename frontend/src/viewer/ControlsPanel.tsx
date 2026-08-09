@@ -16,6 +16,7 @@ interface CtrlProps {
   distance: number | null; clearMeasure: () => void;
   onExport: (fmt: string) => void;
   showAxes: boolean; setShowAxes: (v: boolean) => void;
+  showTrajectory: boolean; setShowTrajectory: (v: boolean) => void;
   colorMode: string; setColorMode: (m: string) => void;
   splatMode: boolean; setSplatMode: (v: boolean) => void;
   brightness: number; setBrightness: (v: number) => void;
@@ -112,7 +113,7 @@ export default function ControlsPanel(p: CtrlProps) {
 }
 
 /* ── View Panel ───────────────────────────────────── */
-function ViewPanel({ pointSize, setPointSize, opacity, setOpacity, showAxes, setShowAxes, edlStrength, setEdlStrength }: any) {
+function ViewPanel({ pointSize, setPointSize, opacity, setOpacity, showAxes, setShowAxes, showTrajectory, setShowTrajectory, edlStrength, setEdlStrength }: any) {
   return (
     <Card title="显示设置">
       <label className="text-gray-500 block mb-1">
@@ -130,8 +131,14 @@ function ViewPanel({ pointSize, setPointSize, opacity, setOpacity, showAxes, set
       <div className="flex gap-1 mb-3">
         <button onClick={() => setShowAxes(!showAxes)}
           className={`flex-1 py-1 rounded text-[10px] ${showAxes ? 'bg-blue-500/20 text-blue-400' : 'bg-gray-800/50 text-gray-500'}`}>
-          {showAxes ? '✓ 坐标轴' : '坐标轴'}
+          {showAxes ? '坐标轴' : '坐标轴'}
         </button>
+        {setShowTrajectory && (
+        <button onClick={() => setShowTrajectory(!showTrajectory)}
+          className={`flex-1 py-1 rounded text-[10px] ${showTrajectory ? 'bg-blue-500/20 text-blue-400' : 'bg-gray-800/50 text-gray-500'}`}>
+          {showTrajectory ? '相机轨迹' : '相机轨迹'}
+        </button>
+        )}
       </div>
 
       {setEdlStrength && (

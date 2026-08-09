@@ -24,6 +24,7 @@ export default function ViewerPage() {
   const [pointSize, setPointSize] = useState(POINT_SIZE);
   const [opacity, setOpacity] = useState(1);
   const [showAxes, setShowAxes] = useState(false);
+  const [showTrajectory, setShowTrajectory] = useState(true);
   const [orthographic, setOrthographic] = useState(false);
   const [colorMode, setColorMode] = useState('rgb');
   const [splatMode, setSplatMode] = useState(false);
@@ -382,6 +383,7 @@ export default function ViewerPage() {
               onPointsReady={handlePointsReady} boxClip={boxClip}
               showAxes={showAxes} orthographic={orthographic} splatMode={splatMode}
               showGrid={showGrid} edlStrength={edlStrength}
+              showTrajectory={showTrajectory}
               streamBuffer={(job as any).status === 'processing' ? streamBuffer : null}
               streamAppend={streamAppend}
               liveMode={(job as any).status === 'processing'}
@@ -407,6 +409,7 @@ export default function ViewerPage() {
               showGrid={showGrid} setShowGrid={setShowGrid}
               onAutoClip={doAutoClip}
               edlStrength={edlStrength} setEdlStrength={setEdlStrength}
+              showTrajectory={showTrajectory} setShowTrajectory={setShowTrajectory}
             />
             )}
           </>
