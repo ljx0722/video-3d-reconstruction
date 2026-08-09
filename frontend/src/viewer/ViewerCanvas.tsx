@@ -157,7 +157,13 @@ export default function ViewerCanvas({
         <GizmoViewport axisColors={['#ef4444', '#22c55e', '#3b82f6']} labelColor="#9ca3af" />
       </GizmoHelper>
 
-      <OrbitControls enableDamping dampingFactor={0.08} minDistance={0.2} maxDistance={20} target={[0, 0, 0]} />
+      <OrbitControls
+        enableDamping dampingFactor={0.08}
+        minDistance={0.05} maxDistance={200}
+        minPolarAngle={0} maxPolarAngle={Math.PI}
+        minAzimuthAngle={-Infinity} maxAzimuthAngle={Infinity}
+        target={[0, 0, 0]}
+      />
     </Canvas>
   );
 }

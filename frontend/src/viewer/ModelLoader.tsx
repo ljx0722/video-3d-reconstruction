@@ -73,9 +73,9 @@ export default function ModelLoader({ url, pointSize, opacity = 1, onPointsReady
   // Update point size
   useEffect(() => {
     if (points) {
-      (points.material as THREE.PointsMaterial).size = pointSize;
+      (points.material as THREE.PointsMaterial).size = splatMode ? pointSize * 4 : pointSize;
     }
-  }, [pointSize, points]);
+  }, [pointSize, points, splatMode]);
 
   // Update opacity
   useEffect(() => {
@@ -91,6 +91,35 @@ export default function ModelLoader({ url, pointSize, opacity = 1, onPointsReady
       (points.material as THREE.PointsMaterial).clippingPlanes = clipPlanes || [];
     }
   }, [clipPlanes, points]);
+
+  // Update splat mode reactively
+  useEffect(() => {
+    if (points) {
+      const mat = points.material as THREE.PointsMaterial;
+      if (splatMode) {
+        const canvas = document.createElement('canvas');
+        canvas.width = canvas.height = 64;
+        const ctx = canvas.getContext('2d')!;
+        const gradient = ctx.createRadialGradient(32, 32, 0, 32, 32, 32);
+        gradient.addColorStop(0, 'rgba(255,255,255,1)');
+        gradient.addColorStop(0.3, 'rgba(255,255,255,0.9)');
+        gradient.addColorStop(0.6, 'rgba(255,255,255,0.3)');
+        gradient.addColorStop(1, 'rgba(255,255,255,0)');
+        ctx.fillStyle = gradient;
+        ctx.fillRect(0, 0, 64, 64);
+        mat.map = new THREE.CanvasTexture(canvas);
+        mat.size = pointSize * 4;
+        mat.blending = THREE.AdditiveBlending;
+        mat.depthWrite = false;
+      } else {
+        mat.map = null;
+        mat.size = pointSize;
+        mat.blending = THREE.NormalBlending;
+        mat.depthWrite = true;
+      }
+      mat.needsUpdate = true;
+    }
+  }, [splatMode, pointSize, points]);
 
   // Notify parent
   useEffect(() => {
