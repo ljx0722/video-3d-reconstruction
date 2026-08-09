@@ -112,15 +112,36 @@ def process_video(video_path: str, settings: dict, job_id: str) -> bytes:
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     video_duration = total_frames / src_fps if src_fps > 0 else 0
 
-    # Dynamic budget: longer/bigger scenes → significantly more points
-    # Point count bottleneck: stride (spatial) × keyframes (temporal) × conf_pct
-    # stride=1 = 268K pts/frame, stride=2 = 67K pts/frame (4x difference)
-    if video_duration < 30:
-        max_target, dynamic_stride, max_keyframes, conf_pct = 200, 3, 50, 10
+    # ── Adaptive quality strategy ──────────────────────────────────────
+    # Goal: approach "manual frame selection" quality — extract frames close to
+    # user-requested FPS, use stride=1 for short scenes, keep most confidence points.
+    #
+    # Point budget per keyframe: stride=1→268K, stride=2→67K, stride=3→30K
+    # GLB winner-take-all dedup removes ~40-60% overlap, so actual ~half.
+    #
+    # max_target: frames fed to GPU (capped at ~500 to stay under 24GB VRAM)
+    # max_keyframes: frames kept in final GLB after temporal subsampling
+    # conf_pct: confidence percentile cutoff (0=keep all, 10=drop bottom 10%)
+
+    if video_duration < 10:
+        # Very short clip — full resolution, keep everything
+        max_target, stride, max_keyframes, conf_pct = 300, 1, 200, 0
+    elif video_duration < 20:
+        max_target, stride, max_keyframes, conf_pct = 400, 1, 250, 0
+    elif video_duration < 30:
+        max_target, stride, max_keyframes, conf_pct = 450, 1, 300, 3
+    elif video_duration < 45:
+        # Medium — stride 2 for GLB size, but generous keyframes
+        max_target, stride, max_keyframes, conf_pct = 500, 2, 200, 5
+    elif video_duration < 60:
+        max_target, stride, max_keyframes, conf_pct = 500, 2, 250, 5
     elif video_duration < 90:
-        max_target, dynamic_stride, max_keyframes, conf_pct = 500, 2, 100, 8
+        max_target, stride, max_keyframes, conf_pct = 550, 2, 300, 5
+    elif video_duration < 150:
+        max_target, stride, max_keyframes, conf_pct = 600, 2, 350, 8
     else:
-        max_target, dynamic_stride, max_keyframes, conf_pct = 600, 2, 150, 5
+        # Very long scene — lower spatial res but maximal temporal coverage
+        max_target, stride, max_keyframes, conf_pct = 600, 2, 400, 8
 
     desired_fps = fps
     interval = max(1, round(src_fps / desired_fps))
@@ -134,7 +155,7 @@ def process_video(video_path: str, settings: dict, job_id: str) -> bytes:
         logger.info(f"Video {video_duration:.0f}s: {total_frames} total → ~{estimated_frames} frames")
 
     # Store for GLB export
-    settings["_dynamic_stride"] = dynamic_stride
+    settings["_dynamic_stride"] = stride
     settings["_max_keyframes"] = max_keyframes
     settings["_conf_pct"] = conf_pct
 
