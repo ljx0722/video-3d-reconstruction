@@ -275,7 +275,7 @@ def process_video(video_path: str, settings: dict) -> bytes:
             # Stream this batch to frontend (downsampled + packed)
             if settings.get("stream_enabled", True):
                 try:
-                    stride_stream = 4
+                    stride_stream = 8  # ~12K pts/batch, 15 batches = browser-friendly
                     world_flat = batch_world[:, ::stride_stream, ::stride_stream].reshape(-1, 3)
                     colors_flat = imgs_np[start:end, :, ::stride_stream, ::stride_stream]
                     if colors_flat.shape[1] == 3:  # CHW → HWC
