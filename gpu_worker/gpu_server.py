@@ -117,11 +117,11 @@ def process_video(video_path: str, settings: dict, job_id: str) -> bytes:
     # Medium: 30-90s → 350 frames, stride 2 (dense, larger scene)
     # Long: >90s → 600 frames, stride 1 (very dense, large scene)
     if video_duration < 30:
-        max_target, dynamic_stride = 150, 3
+        max_target, dynamic_stride, max_keyframes, conf_pct = 150, 3, 40, 15
     elif video_duration < 90:
-        max_target, dynamic_stride = 350, 2
+        max_target, dynamic_stride, max_keyframes, conf_pct = 300, 2, 50, 20
     else:
-        max_target, dynamic_stride = 600, 1
+        max_target, dynamic_stride, max_keyframes, conf_pct = 400, 2, 60, 30
 
     desired_fps = fps
     interval = max(1, round(src_fps / desired_fps))
@@ -134,8 +134,10 @@ def process_video(video_path: str, settings: dict, job_id: str) -> bytes:
     else:
         logger.info(f"Video {video_duration:.0f}s: {total_frames} total → ~{estimated_frames} frames")
 
-    # Store dynamic_stride for GLB export
+    # Store for GLB export
     settings["_dynamic_stride"] = dynamic_stride
+    settings["_max_keyframes"] = max_keyframes
+    settings["_conf_pct"] = conf_pct
 
     tmpdir = tempfile.mkdtemp()
     frame_paths = []
@@ -253,7 +255,11 @@ def process_video(video_path: str, settings: dict, job_id: str) -> bytes:
     _update_status(job_id, "processing", 0.85, "导出GLB模型...")
     from lingbot_map.vis.glb_export import predictions_to_glb
 
-    stride = settings.get("_dynamic_stride", 3)
+    stride = settings.get("_dynamic_stride", 2)
+    max_kf = settings.get("_max_keyframes", 50)
+    conf_pct_val = settings.get("_conf_pct", 20)
+
+    # Spatial downsampling
     vis_pred_sub = {}
     for k, v in vis_pred.items():
         if k in ("world_points_from_depth","depth") and v.ndim >= 4:
@@ -265,8 +271,19 @@ def process_video(video_path: str, settings: dict, job_id: str) -> bytes:
         else:
             vis_pred_sub[k] = v
 
+    # Temporally subsample to max_keyframes
+    num_frames_full = vis_pred_sub.get("depth", vis_pred.get("depth", np.zeros(1))).shape[0]
+    if num_frames_full > max_kf:
+        kf_step = max(1, num_frames_full // max_kf)
+        for key in list(vis_pred_sub.keys()):
+            v = vis_pred_sub[key]
+            if isinstance(v, np.ndarray) and v.ndim >= 3 and v.shape[0] == num_frames_full:
+                vis_pred_sub[key] = v[::kf_step]
+        nf = vis_pred_sub.get("depth", vis_pred.get("depth", np.zeros(1))).shape[0]
+        logger.info(f"Temporal subsample: {num_frames_full} keyframes → {nf} (step={kf_step})")
+
     glb_path = os.path.join(tmpdir, "output.glb")
-    scene = predictions_to_glb(vis_pred_sub, conf_thres=10, show_cam=True, mask_sky=False)
+    scene = predictions_to_glb(vis_pred_sub, conf_thres=conf_pct_val, show_cam=True, mask_sky=False)
     scene.export(glb_path)
     # Read GLB into memory, cleanup temp dir
     with open(glb_path, "rb") as f:
