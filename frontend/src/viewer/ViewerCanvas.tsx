@@ -95,7 +95,7 @@ function CameraTrail({ positions }: { positions: Float32Array }) {
   );
 }
 
-function ZoomAwareControls({ orthographic }: { orthographic: boolean }) {
+function ZoomAwareControls() {
   const ref = useRef<any>(null);
 
   useFrame(() => {
@@ -108,7 +108,6 @@ function ZoomAwareControls({ orthographic }: { orthographic: boolean }) {
   return (
     <OrbitControls
       ref={ref}
-      key={orthographic ? 'oc-ortho' : 'oc-persp'}
       enableDamping dampingFactor={0.08}
       minDistance={0.01} maxDistance={500}
       minPolarAngle={0} maxPolarAngle={Math.PI}
@@ -153,13 +152,11 @@ export default function ViewerCanvas({
     <Canvas
       className="!absolute inset-0"
       gl={{ preserveDrawingBuffer: true, antialias: true, localClippingEnabled: true }}
+      frameloop="always"
       style={{ background: '#0a0a0f' }}
     >
-      {orthographic ? (
-        <OrthographicCamera makeDefault position={[2, 1, 3]} zoom={80} near={0.01} far={200} />
-      ) : (
-        <PerspectiveCamera makeDefault position={[2, 1, 3]} fov={50} near={0.01} far={200} />
-      )}
+      <PerspectiveCamera makeDefault={!orthographic} position={[2, 1, 3]} fov={50} near={0.01} far={200} />
+      <OrthographicCamera makeDefault={orthographic} position={[2, 1, 3]} zoom={80} near={0.01} far={200} />
 
       <ambientLight intensity={0.6} />
       <directionalLight position={[5, 5, 5]} intensity={0.4} />
@@ -200,7 +197,7 @@ export default function ViewerCanvas({
         <GizmoViewport axisColors={['#ef4444', '#22c55e', '#3b82f6']} labelColor="#9ca3af" />
       </GizmoHelper>
 
-      <ZoomAwareControls orthographic={orthographic ?? false} />
+      <ZoomAwareControls />
 
       <EDLEffect edlStrength={edlStrength} />
     </Canvas>
