@@ -112,16 +112,15 @@ def process_video(video_path: str, settings: dict, job_id: str) -> bytes:
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     video_duration = total_frames / src_fps if src_fps > 0 else 0
 
-    # Dynamic budget: longer/bigger scenes → more frames AND denser points
-    # Short: <30s  → 150 frames, stride 3 (coarse, small scene)
-    # Medium: 30-90s → 350 frames, stride 2 (dense, larger scene)
-    # Long: >90s → 600 frames, stride 1 (very dense, large scene)
+    # Dynamic budget: longer/bigger scenes → significantly more points
+    # Point count bottleneck: stride (spatial) × keyframes (temporal) × conf_pct
+    # stride=1 = 268K pts/frame, stride=2 = 67K pts/frame (4x difference)
     if video_duration < 30:
-        max_target, dynamic_stride, max_keyframes, conf_pct = 150, 3, 40, 15
+        max_target, dynamic_stride, max_keyframes, conf_pct = 200, 3, 50, 10
     elif video_duration < 90:
-        max_target, dynamic_stride, max_keyframes, conf_pct = 300, 2, 50, 20
+        max_target, dynamic_stride, max_keyframes, conf_pct = 500, 2, 100, 8
     else:
-        max_target, dynamic_stride, max_keyframes, conf_pct = 400, 2, 60, 30
+        max_target, dynamic_stride, max_keyframes, conf_pct = 600, 2, 150, 5
 
     desired_fps = fps
     interval = max(1, round(src_fps / desired_fps))
