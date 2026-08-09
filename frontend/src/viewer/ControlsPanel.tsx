@@ -23,6 +23,7 @@ interface CtrlProps {
   onResetView: () => void;
   showGrid: boolean; setShowGrid: (v: boolean) => void;
   onAutoClip: () => void;
+  edlStrength: number; setEdlStrength: (v: number) => void;
 }
 
 const Btn = ({ label, active, icon, onClick }: { label: string; active: boolean; icon: string; onClick: () => void }) => (
@@ -111,7 +112,7 @@ export default function ControlsPanel(p: CtrlProps) {
 }
 
 /* ── View Panel ───────────────────────────────────── */
-function ViewPanel({ pointSize, setPointSize, opacity, setOpacity, showAxes, setShowAxes }: any) {
+function ViewPanel({ pointSize, setPointSize, opacity, setOpacity, showAxes, setShowAxes, edlStrength, setEdlStrength }: any) {
   return (
     <Card title="显示设置">
       <label className="text-gray-500 block mb-1">
@@ -126,12 +127,22 @@ function ViewPanel({ pointSize, setPointSize, opacity, setOpacity, showAxes, set
       <input type="range" min={0.1} max={1} step={0.05} value={opacity}
         onChange={e => setOpacity(Number(e.target.value))} className="w-full accent-blue-500 mb-3" />
 
-      <div className="flex gap-1">
+      <div className="flex gap-1 mb-3">
         <button onClick={() => setShowAxes(!showAxes)}
           className={`flex-1 py-1 rounded text-[10px] ${showAxes ? 'bg-blue-500/20 text-blue-400' : 'bg-gray-800/50 text-gray-500'}`}>
           {showAxes ? '✓ 坐标轴' : '坐标轴'}
         </button>
       </div>
+
+      {setEdlStrength && (
+        <>
+          <label className="text-gray-500 block mb-1">
+            Potree EDL <span className="text-gray-600">{(edlStrength ?? 0.4).toFixed(1)}</span>
+          </label>
+          <input type="range" min={0} max={1} step={0.1} value={edlStrength ?? 0.4}
+            onChange={e => setEdlStrength(Number(e.target.value))} className="w-full accent-blue-500 mb-1" />
+        </>
+      )}
     </Card>
   );
 }

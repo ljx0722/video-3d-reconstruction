@@ -29,6 +29,7 @@ export default function ViewerPage() {
   const [splatMode, setSplatMode] = useState(false);
   const [brightness, setBrightness] = useState(1.0);
   const [showGrid, setShowGrid] = useState(false);
+  const [edlStrength, setEdlStrength] = useState(0.4);
 
   // Processing
   const [pointCount, setPointCount] = useState(0);
@@ -335,7 +336,7 @@ export default function ViewerPage() {
             <ViewerCanvas jobId={job.id} pointSize={pointSize} opacity={opacity}
               onPointsReady={handlePointsReady} boxClip={boxClip}
               showAxes={showAxes} orthographic={orthographic} splatMode={splatMode}
-              showGrid={showGrid} />
+              showGrid={showGrid} edlStrength={edlStrength} />
             <ControlsPanel
               pointSize={pointSize} setPointSize={setPointSize}
               opacity={opacity} setOpacity={setOpacity}
@@ -355,6 +356,7 @@ export default function ViewerPage() {
               onScreenshot={doScreenshot} onResetView={doResetView}
               showGrid={showGrid} setShowGrid={setShowGrid}
               onAutoClip={doAutoClip}
+              edlStrength={edlStrength} setEdlStrength={setEdlStrength}
             />
           </>
         ):job.status==='failed'?(

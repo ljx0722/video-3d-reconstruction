@@ -4,6 +4,7 @@ import { OrbitControls, GizmoHelper, GizmoViewport, Grid, Html, Line } from '@re
 import * as THREE from 'three';
 import { getResultUrl } from '../api/client';
 import ModelLoader from './ModelLoader';
+import EDLEffect from './EDLEffect';
 import type { BoxClip } from './Toolbar';
 
 interface Props {
@@ -17,6 +18,7 @@ interface Props {
   splatMode?: boolean;
   showGrid?: boolean;
   showTrajectory?: boolean;
+  edlStrength?: number;
 }
 
 function BoxWireframe({ boxClip }: { boxClip: BoxClip }) {
@@ -111,6 +113,7 @@ function AxesHelper3D() {
 export default function ViewerCanvas({
   jobId, pointSize, opacity = 1, onPointsReady,
   boxClip, showAxes, orthographic, splatMode, showGrid, showTrajectory = true,
+  edlStrength = 0.4,
 }: Props) {
   const [camPositions, setCamPositions] = useState<Float32Array | null>(null);
   const defaultBox: BoxClip = boxClip || { enabled: false, min: [-1, -0.5, -1], max: [1, 0.5, 1] };
@@ -173,6 +176,9 @@ export default function ViewerCanvas({
         minAzimuthAngle={-Infinity} maxAzimuthAngle={Infinity}
         target={[0, 0, 0]}
       />
+
+      {/* Potree-style post-processing */}
+      <EDLEffect edlStrength={edlStrength} />
     </Canvas>
   );
 }
