@@ -89,7 +89,7 @@ def _find_checkpoint():
 
 
 # ── Inference pipeline ──────────────────────────────────────────────────────
-def process_video(video_path: str, settings: dict) -> bytes:
+def process_video(video_path: str, settings: dict, job_id: str) -> bytes:
     """Run lingbot-map inference and return GLB bytes. Cleans temp dirs after."""
     import torch
     import cv2
@@ -396,7 +396,7 @@ def poll_and_process():
                 _update_status(job_id, "processing", 0.1)
 
                 # Run inference
-                glb_data = process_video(video_tmp, settings)
+                glb_data = process_video(video_tmp, settings, job_id)
                 os.unlink(video_tmp)
 
                 # Upload GLB result
@@ -423,8 +423,11 @@ def poll_and_process():
                     pass
                 # Also cleanup GPU after failures
                 import gc; gc.collect()
-                if torch.cuda.is_available():
-                    torch.cuda.empty_cache()
+                try:
+                    import torch as _torch
+                    if _torch.cuda.is_available():
+                        _torch.cuda.empty_cache()
+                except: pass
 
         time.sleep(POLL_INTERVAL)
 
