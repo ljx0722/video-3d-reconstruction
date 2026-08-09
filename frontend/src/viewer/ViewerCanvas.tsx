@@ -1,6 +1,6 @@
 import { Suspense } from 'react';
 import { Canvas } from '@react-three/fiber';
-import { OrbitControls, GizmoHelper, GizmoViewport } from '@react-three/drei';
+import { OrbitControls, GizmoHelper, GizmoViewport, Grid } from '@react-three/drei';
 import * as THREE from 'three';
 import { getResultUrl } from '../api/client';
 import ModelLoader from './ModelLoader';
@@ -15,6 +15,8 @@ interface Props {
   boxClip?: BoxClip;
   showAxes?: boolean;
   orthographic?: boolean;
+  splatMode?: boolean;
+  showGrid?: boolean;
 }
 
 function ClippingPlanes3D({ clipPlanes, boxClip }: { clipPlanes: ClipPlane[]; boxClip: BoxClip }) {
@@ -91,7 +93,7 @@ function AxesHelper() {
 
 export default function ViewerCanvas({
   jobId, pointSize, opacity = 1, onPointsReady,
-  clipPlanes, boxClip, showAxes, orthographic,
+  clipPlanes, boxClip, showAxes, orthographic, splatMode, showGrid,
 }: Props) {
   const defaultClipPlanes: ClipPlane[] = clipPlanes || [
     { axis: 'x', offset: -1.5, enabled: false, negative: false },
@@ -137,11 +139,15 @@ export default function ViewerCanvas({
           opacity={opacity}
           onPointsReady={onPointsReady}
           clipPlanes={threeClipPlanes}
+          splatMode={splatMode}
         />
       </Suspense>
 
       {/* Visual guides for clipping planes */}
       <ClippingPlanes3D clipPlanes={activeClipPlanes} boxClip={activeBoxClip} />
+
+      {/* Grid */}
+      {showGrid && <Grid infiniteGrid fadeDistance={50} fadeStrength={5} sectionSize={1} cellSize={0.5} sectionColor="#374151" cellColor="#1f2937" />}
 
       {/* Axis helper */}
       {showAxes && <AxesHelper />}

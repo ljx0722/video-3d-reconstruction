@@ -8,9 +8,10 @@ interface Props {
   opacity?: number;
   onPointsReady?: (mesh: THREE.Points) => void;
   clipPlanes?: THREE.Plane[];
+  splatMode?: boolean;
 }
 
-export default function ModelLoader({ url, pointSize, opacity = 1, onPointsReady, clipPlanes }: Props) {
+export default function ModelLoader({ url, pointSize, opacity = 1, onPointsReady, clipPlanes, splatMode }: Props) {
   const { scene } = useGLTF(url);
 
   const points = useMemo(() => {
@@ -35,16 +36,34 @@ export default function ModelLoader({ url, pointSize, opacity = 1, onPointsReady
     geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(positions), 3));
     geo.setAttribute('color', new THREE.BufferAttribute(new Float32Array(colors), 3));
 
+    // Create circular splat texture for gaussian-like rendering
+    let map: THREE.Texture | undefined;
+    if (splatMode) {
+      const canvas = document.createElement('canvas');
+      canvas.width = canvas.height = 64;
+      const ctx = canvas.getContext('2d')!;
+      const gradient = ctx.createRadialGradient(32, 32, 0, 32, 32, 32);
+      gradient.addColorStop(0, 'rgba(255,255,255,1)');
+      gradient.addColorStop(0.3, 'rgba(255,255,255,0.9)');
+      gradient.addColorStop(0.6, 'rgba(255,255,255,0.3)');
+      gradient.addColorStop(1, 'rgba(255,255,255,0)');
+      ctx.fillStyle = gradient;
+      ctx.fillRect(0, 0, 64, 64);
+      map = new THREE.CanvasTexture(canvas);
+    }
+
     const mat = new THREE.PointsMaterial({
-      size: pointSize,
+      size: splatMode ? pointSize * 4 : pointSize,
       vertexColors: true,
       sizeAttenuation: true,
-      depthWrite: true,
-      blending: THREE.NormalBlending,
-      transparent: opacity < 1,
+      depthWrite: splatMode ? false : true,
+      blending: splatMode ? THREE.AdditiveBlending : THREE.NormalBlending,
+      transparent: true,
       opacity,
       clippingPlanes: clipPlanes || [],
       clipShadows: true,
+      map: map || undefined,
+      depthTest: true,
     });
 
     return new THREE.Points(geo, mat);
@@ -63,7 +82,6 @@ export default function ModelLoader({ url, pointSize, opacity = 1, onPointsReady
     if (points) {
       const mat = points.material as THREE.PointsMaterial;
       mat.opacity = opacity;
-      mat.transparent = opacity < 1;
     }
   }, [opacity, points]);
 
