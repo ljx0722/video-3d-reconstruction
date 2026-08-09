@@ -39,6 +39,7 @@ export default function ViewerPage() {
 
   // Clip
   const [boxClip, setBoxClip] = useState<BoxClip>(defaultBoxClip);
+  const [orbitTarget, setOrbitTarget] = useState<[number, number, number]>([0, 0, 0]);
 
   // Measure
   const [measureMode, setMeasureMode] = useState(false);
@@ -136,6 +137,15 @@ export default function ViewerPage() {
         setRawSectionData({ pos: posCopy, col: colCopy });
         setOriginalCount(pos.count);
         setPointCount(pos.count);
+
+        // Compute bounding box center for orbit target
+        let mx = Infinity, Mx = -Infinity, my = Infinity, My = -Infinity, mz = Infinity, Mz = -Infinity;
+        for (let i = 0; i < posCopy.length; i += 3) {
+          if (posCopy[i] < mx) mx = posCopy[i]; if (posCopy[i] > Mx) Mx = posCopy[i];
+          if (posCopy[i+1] < my) my = posCopy[i+1]; if (posCopy[i+1] > My) My = posCopy[i+1];
+          if (posCopy[i+2] < mz) mz = posCopy[i+2]; if (posCopy[i+2] > Mz) Mz = posCopy[i+2];
+        }
+        setOrbitTarget([(mx+Mx)/2, (my+My)/2, (mz+Mz)/2]);
       }
     }
   }, []);
@@ -386,6 +396,7 @@ export default function ViewerPage() {
               showAxes={showAxes} orthographic={orthographic} splatMode={splatMode}
               showGrid={showGrid} edlStrength={edlStrength}
               showTrajectory={showTrajectory}
+              orbitTarget={orbitTarget}
               streamBuffer={(job as any).status === 'processing' ? streamBuffer : null}
               streamAppend={streamAppend}
               liveMode={(job as any).status === 'processing'}

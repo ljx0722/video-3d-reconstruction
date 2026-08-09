@@ -23,6 +23,7 @@ interface Props {
   streamBuffer?: Float32Array | null;
   streamAppend?: boolean;
   liveMode?: boolean;
+  orbitTarget?: [number, number, number];
 }
 
 function BoxWireframe({ boxClip }: { boxClip: BoxClip }) {
@@ -95,22 +96,22 @@ function CameraTrail({ positions }: { positions: Float32Array }) {
   );
 }
 
-function AdaptiveControls() {
+function AdaptiveControls({ target }: { target: [number, number, number] }) {
   const ref = useRef<any>(null);
 
   useFrame(({ camera }) => {
     if (ref.current) {
       const d = camera.position.length();
-      ref.current.rotateSpeed = Math.max(1.0, Math.min(8, d * 1.0));
-      ref.current.zoomSpeed = Math.max(0.2, Math.min(3, d * 0.15));
-      ref.current.panSpeed = Math.max(0.2, Math.min(6, d * 0.5));
+      ref.current.rotateSpeed = Math.max(0.8, Math.min(6, d * 0.7));
+      ref.current.zoomSpeed = Math.max(0.15, Math.min(2.5, d * 0.12));
+      ref.current.panSpeed = Math.max(0.15, Math.min(3, d * 0.25));
     }
   });
 
   return (
     <TrackballControls
       ref={ref}
-      target={[0, 0, 0]}
+      target={target}
     />
   );
 }
@@ -129,6 +130,7 @@ export default function ViewerCanvas({
   jobId, pointSize, opacity = 1, onPointsReady,
   boxClip, showAxes, orthographic, splatMode, showGrid, showTrajectory = true,
   edlStrength = 0.4, streamBuffer, streamAppend, liveMode,
+  orbitTarget = [0, 0, 0],
 }: Props) {
   const [camPositions, setCamPositions] = useState<Float32Array | null>(null);
   const defaultBox: BoxClip = boxClip || { enabled: false, min: [-1, -0.5, -1], max: [1, 0.5, 1] };
@@ -195,7 +197,7 @@ export default function ViewerCanvas({
         <GizmoViewport axisColors={['#ef4444', '#22c55e', '#3b82f6']} labelColor="#9ca3af" />
       </GizmoHelper>
 
-      <AdaptiveControls />
+      <AdaptiveControls target={orbitTarget} />
 
       <EDLEffect edlStrength={edlStrength} />
     </Canvas>
