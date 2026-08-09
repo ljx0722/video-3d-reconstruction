@@ -1,5 +1,5 @@
-import { Suspense, useState, useCallback } from 'react';
-import { Canvas } from '@react-three/fiber';
+import { Suspense, useState, useCallback, useRef } from 'react';
+import { Canvas, useFrame } from '@react-three/fiber';
 import { OrbitControls, GizmoHelper, GizmoViewport, Grid, Html, Line } from '@react-three/drei';
 import * as THREE from 'three';
 import { getResultUrl } from '../api/client';
@@ -104,6 +104,28 @@ function CameraTrail({ positions }: { positions: Float32Array }) {
   );
 }
 
+function ZoomAwareControls() {
+  const ref = useRef<any>(null);
+
+  useFrame(() => {
+    if (ref.current) {
+      const d = ref.current.getDistance();
+      ref.current.zoomSpeed = Math.max(0.08, Math.min(12, d * 0.35));
+    }
+  });
+
+  return (
+    <OrbitControls
+      ref={ref}
+      enableDamping dampingFactor={0.08}
+      minDistance={0.01} maxDistance={500}
+      minPolarAngle={0} maxPolarAngle={Math.PI}
+      minAzimuthAngle={-Infinity} maxAzimuthAngle={Infinity}
+      target={[0, 0, 0]}
+    />
+  );
+}
+
 function AxesHelper3D() {
   return (
     <group>
@@ -185,13 +207,7 @@ export default function ViewerCanvas({
         <GizmoViewport axisColors={['#ef4444', '#22c55e', '#3b82f6']} labelColor="#9ca3af" />
       </GizmoHelper>
 
-      <OrbitControls
-        enableDamping dampingFactor={0.08}
-        minDistance={0.01} maxDistance={500}
-        minPolarAngle={0} maxPolarAngle={Math.PI}
-        minAzimuthAngle={-Infinity} maxAzimuthAngle={Infinity}
-        target={[0, 0, 0]}
-      />
+      <ZoomAwareControls />
 
       {/* Potree-style post-processing */}
       <EDLEffect edlStrength={edlStrength} />
