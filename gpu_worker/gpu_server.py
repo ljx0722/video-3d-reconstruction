@@ -112,16 +112,16 @@ def process_video(video_path: str, settings: dict, job_id: str) -> bytes:
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     video_duration = total_frames / src_fps if src_fps > 0 else 0
 
-    # Dynamic frame budget based on video duration
-    # Short videos (<30s): up to 200 frames → stride 2 (dense)
-    # Medium (30-90s): up to 400 frames → stride 3
-    # Long (>90s): up to 600 frames → stride 4
+    # Dynamic budget: longer/bigger scenes → more frames AND denser points
+    # Short: <30s  → 150 frames, stride 3 (coarse, small scene)
+    # Medium: 30-90s → 350 frames, stride 2 (dense, larger scene)
+    # Long: >90s → 600 frames, stride 1 (very dense, large scene)
     if video_duration < 30:
-        max_target, dynamic_stride = 200, 2
+        max_target, dynamic_stride = 150, 3
     elif video_duration < 90:
-        max_target, dynamic_stride = 400, 3
+        max_target, dynamic_stride = 350, 2
     else:
-        max_target, dynamic_stride = 600, 4
+        max_target, dynamic_stride = 600, 1
 
     desired_fps = fps
     interval = max(1, round(src_fps / desired_fps))
