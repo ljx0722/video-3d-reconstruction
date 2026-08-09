@@ -333,12 +333,23 @@ def poll_and_process():
 
                 logger.info(f"Job {job_id} completed ({len(glb_data)/1024/1024:.1f} MB)")
 
+                # Aggressive GPU cleanup between jobs to prevent OOM
+                del glb_data
+                import gc; gc.collect()
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                    torch.cuda.reset_peak_memory_stats()
+
             except Exception as e:
                 logger.exception(f"Job {job_id} failed")
                 try:
                     _update_status(job_id, "failed", 0, error=str(e)[:500])
                 except Exception:
                     pass
+                # Also cleanup GPU after failures
+                import gc; gc.collect()
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
 
         time.sleep(POLL_INTERVAL)
 
