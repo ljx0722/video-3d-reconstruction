@@ -101,9 +101,9 @@ function AdaptiveControls() {
   useFrame(({ camera }) => {
     if (ref.current) {
       const d = camera.position.length();
-      ref.current.rotateSpeed = Math.max(1.5, Math.min(20, d * 2.5));
-      ref.current.zoomSpeed = Math.max(0.5, Math.min(80, d * 6));
-      ref.current.panSpeed = Math.max(0.3, Math.min(15, d * 1.2));
+      ref.current.rotateSpeed = Math.max(1.0, Math.min(8, d * 1.0));
+      ref.current.zoomSpeed = Math.max(0.2, Math.min(3, d * 0.15));
+      ref.current.panSpeed = Math.max(0.2, Math.min(6, d * 0.5));
     }
   });
 
