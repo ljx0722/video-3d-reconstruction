@@ -387,4 +387,5 @@ def _upload_result(job_id: str, glb_data: bytes):
             else:
                 raise
 
-
+if __name__ == "__main__":
+    poll_and_process()
