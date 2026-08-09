@@ -50,8 +50,8 @@ def load_model():
     logger.info("Building GCTStream model...")
     _model = GCTStream(
         img_size=518, patch_size=14,
-        enable_3d_rope=True, max_frame_num=1024,
-        kv_cache_sliding_window=64, kv_cache_scale_frames=8,
+        enable_3d_rope=True, max_frame_num=512,
+        kv_cache_sliding_window=64, kv_cache_scale_frames=4,
         kv_cache_cross_frame_special=True, kv_cache_include_scale_frames=True,
         use_sdpa=True, camera_num_iterations=4,
     )
@@ -130,7 +130,7 @@ def process_video(video_path: str, settings: dict) -> bytes:
     images = load_and_preprocess_images(frame_paths, mode="crop", image_size=518, patch_size=14)
     images = images.to(_device)
 
-    num_scale_frames = min(8, num_frames)
+    num_scale_frames = min(4, num_frames)
     if num_scale_frames >= num_frames:
         num_scale_frames = max(1, num_frames - 1)
 
@@ -156,10 +156,22 @@ def process_video(video_path: str, settings: dict) -> bytes:
     logger.info(f"Inference done in {elapsed:.1f}s")
     if torch.cuda.is_available():
         logger.info(f"GPU peak: {torch.cuda.max_memory_allocated()/1e9:.2f} GB")
+        torch.cuda.reset_peak_memory_stats()
+
+    # Free GPU images before CPU postprocessing to reduce peak VRAM
+    del images
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
+    # Free GPU images after extracting shape info
+    img_h, img_w = images.shape[-2], images.shape[-1]
+    del images
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
 
     # ── Postprocess (exactly as demo.py) ────────────────────────────────
     # Convert pose encoding to extrinsic/intrinsic
-    extrinsic, intrinsic = pose_encoding_to_extri_intri(predictions["pose_enc"], images.shape[-2:])
+    extrinsic, intrinsic = pose_encoding_to_extri_intri(predictions["pose_enc"], (img_h, img_w))
     # w2c → c2w
     ext_4x4 = torch.zeros((*extrinsic.shape[:-2], 4, 4), device=extrinsic.device, dtype=extrinsic.dtype)
     ext_4x4[..., :3, :4] = extrinsic
@@ -181,13 +193,11 @@ def process_video(video_path: str, settings: dict) -> bytes:
     for k in list(predictions.keys()):
         if isinstance(predictions[k], torch.Tensor):
             predictions[k] = _squeeze(k, predictions[k].to("cpu", non_blocking=True))
-    images_cpu = images.to("cpu", non_blocking=True)
     if torch.cuda.is_available():
         torch.cuda.synchronize()
 
     predictions.pop("pose_enc_list", None)
-    predictions.pop("images", None)
-    del images
+    # Images are already moved to CPU in predictions, keep them there
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
 
@@ -202,10 +212,10 @@ def process_video(video_path: str, settings: dict) -> bytes:
             v_np = v
         vis_pred[k] = v_np
 
-    imgs_np = images_cpu
-    if isinstance(imgs_np, torch.Tensor):
-        imgs_np = imgs_np.detach().cpu().numpy()
-    vis_pred["images"] = imgs_np
+    # images are in predictions dict, already moved to CPU
+    imgs_np = vis_pred.get("images")
+    if imgs_np is not None:
+        vis_pred["images"] = imgs_np
 
     # ── Compute world_points_from_depth using official geometry utility ──
     # This mirrors PointCloudViewer.parse_pc_data(): depth → world coords
