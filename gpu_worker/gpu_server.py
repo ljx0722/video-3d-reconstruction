@@ -105,10 +105,23 @@ def process_video(video_path: str, settings: dict) -> bytes:
     mode = settings.get("mode", "streaming")
 
     # ── Extract frames ─────────────────────────────────────────────────
+    _update_status(job_id, "processing", 0.02, "正在解码视频帧...")
+
     cap = cv2.VideoCapture(video_path)
     src_fps = cap.get(cv2.CAP_PROP_FPS) or 30
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    interval = max(1, round(src_fps / fps))
+
+    # Auto-cap to ~300 frames for reasonable processing time (~60s)
+    MAX_TARGET_FRAMES = 300
+    desired_fps = fps
+    interval = max(1, round(src_fps / desired_fps))
+    estimated_frames = total_frames // interval
+    if estimated_frames > MAX_TARGET_FRAMES:
+        # Adjust fps up to reduce extracted frames
+        desired_fps = max(1, src_fps * MAX_TARGET_FRAMES / total_frames)
+        interval = max(1, round(src_fps / desired_fps))
+        estimated_frames = total_frames // interval
+        logger.info(f"Auto-capped frames: {total_frames} total -> ~{estimated_frames} (fps={desired_fps:.1f})")
 
     tmpdir = tempfile.mkdtemp()
     frame_paths = []
@@ -127,6 +140,7 @@ def process_video(video_path: str, settings: dict) -> bytes:
     logger.info(f"Extracted {num_frames} frames (total={total_frames}, interval={interval})")
 
     # ── Preprocess (exactly as demo.py) ─────────────────────────────────
+    _update_status(job_id, "processing", 0.08, f"预处理 {num_frames} 帧图像...")
     images = load_and_preprocess_images(frame_paths, mode="crop", image_size=518, patch_size=14)
     images = images.to(_device)
 
@@ -140,6 +154,8 @@ def process_video(video_path: str, settings: dict) -> bytes:
 
     # ── Inference (exactly as demo.py) ──────────────────────────────────
     logger.info(f"Inference: {num_frames} frames, scale={num_scale_frames}, kf={kf_interval}")
+    est_time = num_frames / 5.0  # ~5 FPS estimate
+    _update_status(job_id, "processing", 0.12, f"GPU 推理 {num_frames} 帧中, 预计 {est_time:.0f}s...")
     t0 = time.time()
 
     with torch.no_grad(), torch.amp.autocast("cuda", dtype=_dtype):
@@ -277,7 +293,11 @@ def process_video(video_path: str, settings: dict) -> bytes:
             batch_num += 1
 
         vis_pred["world_points_from_depth"] = all_world
+        _update_status(job_id, "processing", 0.85, f"计算世界坐标完成, 导出GLB...")
         logger.info(f"world_points + streaming: {S_d}x{H_d}x{W_d}, {batch_num} batches sent")
+
+    # ── Export GLB ──────────────────────────────────────────────────
+    _update_status(job_id, "processing", 0.90, "导出GLB模型...")
 
     # ── Export GLB via official predictions_to_glb ──────────────────────
     from lingbot_map.vis.glb_export import predictions_to_glb
@@ -398,7 +418,7 @@ def poll_and_process():
             except Exception as e:
                 logger.exception(f"Job {job_id} failed")
                 try:
-                    _update_status(job_id, "failed", 0, error=str(e)[:500])
+                    _update_status(job_id, "failed", 0, str(e)[:500])
                 except Exception:
                     pass
                 # Also cleanup GPU after failures
@@ -409,8 +429,8 @@ def poll_and_process():
         time.sleep(POLL_INTERVAL)
 
 
-def _update_status(job_id: str, status: str, progress: float, error: str = ""):
-    data = json.dumps({"status": status, "progress": progress, "error_message": error}).encode()
+def _update_status(job_id: str, status: str, progress: float, detail: str = ""):
+    data = json.dumps({"status": status, "progress": progress, "detail": detail, "error_message": ""}).encode()
     req = urllib.request.Request(
         f"{BACKEND_URL}/api/v1/gpu/status/{job_id}",
         data=data,

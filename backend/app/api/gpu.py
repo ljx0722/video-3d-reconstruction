@@ -61,8 +61,18 @@ async def update_status(job_id: str, data: dict = Body(...)):
         if job:
             job.status = data.get("status", job.status)
             job.progress = data.get("progress", job.progress)
+            detail = data.get("detail", "")
             if data.get("error_message"):
                 job.error_message = data["error_message"]
+            # Store detail as part of settings (JSON), since Job model has no detail column
+            if detail:
+                import json
+                try:
+                    s = json.loads(job.settings or "{}")
+                except:
+                    s = {}
+                s["_detail"] = detail
+                job.settings = json.dumps(s)
             await session.commit()
     return {"ok": True}
 

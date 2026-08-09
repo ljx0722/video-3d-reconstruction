@@ -314,9 +314,10 @@ export default function ViewerPage() {
     if (pointsRef.current && originalData.current) applyColor(colorMode, brightness);
   }, [colorMode, brightness, applyColor]);
 
-  const isProcessing = job?.status === 'uploaded' || job?.status === 'processing';
+  const isProcessing = (job as any)?.status === 'uploaded' || (job as any)?.status === 'processing';
   const progressPct = Math.max(2, Math.min(100, (job?.progress || 0) * 100));
-  const currentStep = job?.status === 'completed' ? 4 : isProcessing ? (job?.progress||0)>=0.15?2:1 : 0;
+  const currentStep = (job as any)?.status === 'completed' ? 4 : isProcessing ? (job?.progress||0)>=0.15?2:1 : 0;
+  const detailText = ((job as any)?.detail || (job as any)?.settings?._detail || '');
 
   if (jobError) return <p className="text-center text-red-400 mt-12">加载作业失败</p>;
   if (!job) return <div className="flex items-center justify-center h-full"><div className="w-12 h-12 border-4 border-blue-500 border-t-transparent rounded-full animate-spin" /></div>;
@@ -342,7 +343,11 @@ export default function ViewerPage() {
                 </svg>
                 <span className="absolute inset-0 flex items-center justify-center text-xs font-bold">{Math.round(progressPct)}%</span>
               </div>
-              <div><div className="text-sm font-medium">处理中...</div><div className="text-xs text-gray-500">{job.num_frames?`${job.num_frames} 帧`:'准备中'}</div></div>
+              <div>
+                <div className="text-sm font-medium">处理中...</div>
+                <div className="text-xs text-gray-500">{job.num_frames?`${job.num_frames} 帧`:'准备中'}</div>
+                {detailText && <div className="text-[10px] text-blue-400/70 mt-0.5">{detailText}</div>}
+              </div>
             </div>
           )}
           {job.status==='completed'&&<div className="mb-4 text-sm text-green-400">&#x2713; 处理完成</div>}

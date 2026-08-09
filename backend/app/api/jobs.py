@@ -107,4 +107,5 @@ def _job_to_response(job: Job) -> dict:
         "processing_time_secs": job.processing_time_secs,
         "created_at": job.created_at.isoformat() if job.created_at else None,
         "updated_at": job.updated_at.isoformat() if job.updated_at else None,
+        "detail": settings.get("_detail", "") if settings else "",
     }
