@@ -1,9 +1,8 @@
 import os
 import logging
 from contextlib import asynccontextmanager
-from fastapi import FastAPI
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
 from app.database import engine
 from app.models.job import Base
 from app.api.router import router
@@ -39,3 +38,19 @@ app.include_router(router)
 @app.get("/api/v1/health")
 async def health():
     return {"status": "ok", "version": "0.1.0"}
+
+
+@app.websocket("/ws/{job_id}")
+async def stream_ws(ws: WebSocket, job_id: str):
+    """Live point cloud streaming WebSocket."""
+    from app.api.gpu import _stream_connections
+    await ws.accept()
+    _stream_connections.setdefault(job_id, []).append(ws)
+    try:
+        while True:
+            await ws.receive_text()  # keep-alive
+    except (WebSocketDisconnect, Exception):
+        conns = _stream_connections.get(job_id, [])
+        _stream_connections[job_id] = [w for w in conns if w != ws]
+        if not _stream_connections[job_id]:
+            _stream_connections.pop(job_id, None)

@@ -4,6 +4,7 @@ import { OrbitControls, GizmoHelper, GizmoViewport, Grid, Html, Line } from '@re
 import * as THREE from 'three';
 import { getResultUrl } from '../api/client';
 import ModelLoader from './ModelLoader';
+import StreamLoader from './StreamLoader';
 import EDLEffect from './EDLEffect';
 import type { BoxClip } from './Toolbar';
 
@@ -11,7 +12,7 @@ interface Props {
   jobId: string;
   pointSize: number;
   opacity?: number;
-  onPointsReady?: (mesh: THREE.Points) => void;
+  onPointsReady?: (mesh: THREE.Points, count?: number) => void;
   boxClip?: BoxClip;
   showAxes?: boolean;
   orthographic?: boolean;
@@ -19,6 +20,9 @@ interface Props {
   showGrid?: boolean;
   showTrajectory?: boolean;
   edlStrength?: number;
+  streamBuffer?: Float32Array | null;
+  streamAppend?: boolean;
+  liveMode?: boolean;
 }
 
 function BoxWireframe({ boxClip }: { boxClip: BoxClip }) {
@@ -113,7 +117,7 @@ function AxesHelper3D() {
 export default function ViewerCanvas({
   jobId, pointSize, opacity = 1, onPointsReady,
   boxClip, showAxes, orthographic, splatMode, showGrid, showTrajectory = true,
-  edlStrength = 0.4,
+  edlStrength = 0.4, streamBuffer, streamAppend, liveMode,
 }: Props) {
   const [camPositions, setCamPositions] = useState<Float32Array | null>(null);
   const defaultBox: BoxClip = boxClip || { enabled: false, min: [-1, -0.5, -1], max: [1, 0.5, 1] };
@@ -146,15 +150,27 @@ export default function ViewerCanvas({
       <directionalLight position={[5, 5, 5]} intensity={0.4} />
 
       <Suspense fallback={null}>
-        <ModelLoader
-          url={getResultUrl(jobId)}
-          pointSize={pointSize}
-          opacity={opacity}
-          onPointsReady={onPointsReady}
-          onCameraPositions={handleCameras}
-          clipPlanes={threeClipPlanes}
-          splatMode={splatMode}
-        />
+        {liveMode || streamBuffer ? (
+          <StreamLoader
+            pointSize={pointSize}
+            opacity={opacity}
+            onPointsReady={onPointsReady as any}
+            clipPlanes={threeClipPlanes}
+            splatMode={splatMode}
+            streamBuffer={streamBuffer || undefined}
+            streamAppend={streamAppend}
+          />
+        ) : (
+          <ModelLoader
+            url={getResultUrl(jobId)}
+            pointSize={pointSize}
+            opacity={opacity}
+            onPointsReady={onPointsReady as any}
+            onCameraPositions={handleCameras}
+            clipPlanes={threeClipPlanes}
+            splatMode={splatMode}
+          />
+        )}
       </Suspense>
 
       {camPositions && showTrajectory && <CameraTrail positions={camPositions} />}

@@ -217,25 +217,67 @@ def process_video(video_path: str, settings: dict) -> bytes:
     if imgs_np is not None:
         vis_pred["images"] = imgs_np
 
-    # ── Compute world_points_from_depth using official geometry utility ──
-    # This mirrors PointCloudViewer.parse_pc_data(): depth → world coords
-    # for ALL frames (no keyframe subsampling), with absolute conf threshold
+    # ── Compute world points AND stream per-batch to frontend ──────────
     if "world_points" not in vis_pred:
-        logger.info("Computing world_points_from_depth via official unproject...")
+        logger.info("Computing world_points + streaming per-batch...")
         from lingbot_map.utils.geometry import unproject_depth_map_to_point_map
 
-        # Unproject ALL frames at full resolution
         depth_t = vis_pred["depth"]  # (S, H, W, 1)
         extrinsics = vis_pred["extrinsic"]  # (S, 3, 4) c2w
         intrinsics = vis_pred["intrinsic"]  # (S, 3, 3)
 
-        # Official function: depth → world coords per frame
-        world_pts = unproject_depth_map_to_point_map(
-            depth_t, extrinsics, intrinsics,
-        )
-        vis_pred["world_points_from_depth"] = world_pts
-        S_d, H_d, W_d = world_pts.shape[:3]
-        logger.info(f"world_points_from_depth: {S_d}x{H_d}x{W_d} (all frames)")
+        S_d, H_d, W_d = depth_t.shape[0], depth_t.shape[1], depth_t.shape[2]
+
+        # Process in batches for streaming (every 8 frames = ~1.5s between updates)
+        batch_size = max(1, S_d // 15)
+        all_world = np.zeros((S_d, H_d, W_d, 3), dtype=np.float32)
+
+        batch_num = 0
+        for start in range(0, S_d, batch_size):
+            end = min(start + batch_size, S_d)
+            logger.info(f"  Batch {batch_num}: frames {start}-{end-1} of {S_d}")
+
+            # Compute world points for this batch
+            batch_depth = depth_t[start:end]
+            batch_ext = extrinsics[start:end]
+            batch_int = intrinsics[start:end] if intrinsics is not None else None
+
+            if batch_int is not None:
+                batch_world = unproject_depth_map_to_point_map(batch_depth, batch_ext, batch_int)
+            else:
+                # Fallback per-frame
+                batch_world = []
+                for fi in range(start, end):
+                    pts, _, _ = depth_to_world_coords_points(
+                        depth_t[fi].squeeze(-1), extrinsics[fi], intrinsics[fi],
+                    )
+                    batch_world.append(pts)
+                batch_world = np.stack(batch_world, axis=0)
+
+            all_world[start:end] = batch_world
+
+            # Stream this batch to frontend (downsampled + packed)
+            if settings.get("stream_enabled", True):
+                try:
+                    stride_stream = 4
+                    world_flat = batch_world[:, ::stride_stream, ::stride_stream].reshape(-1, 3)
+                    colors_flat = imgs_np[start:end, :, ::stride_stream, ::stride_stream]
+                    if colors_flat.shape[1] == 3:  # CHW → HWC
+                        colors_flat = colors_flat.transpose(0, 2, 3, 1)
+                    colors_flat = (colors_flat.reshape(-1, 3) * 255).astype(np.uint8)
+
+                    # Pack: [x,y,z,r,g,b] × N as float32
+                    packed = np.zeros((len(world_flat), 6), dtype=np.float32)
+                    packed[:, :3] = world_flat.astype(np.float32)
+                    packed[:, 3:] = colors_flat.astype(np.float32) / 255.0
+                    _stream_batch(job_id, batch_num, packed.tobytes(), len(world_flat))
+                except Exception:
+                    logger.warning(f"Stream batch {batch_num} failed", exc_info=True)
+
+            batch_num += 1
+
+        vis_pred["world_points_from_depth"] = all_world
+        logger.info(f"world_points + streaming: {S_d}x{H_d}x{W_d}, {batch_num} batches sent")
 
     # ── Export GLB via official predictions_to_glb ──────────────────────
     from lingbot_map.vis.glb_export import predictions_to_glb
@@ -341,6 +383,9 @@ def poll_and_process():
                 _update_status(job_id, "processing", 0.9)
                 _upload_result(job_id, glb_data)
 
+                # Final stream status
+                _update_status(job_id, "completed", 1.0)
+
                 logger.info(f"Job {job_id} completed ({len(glb_data)/1024/1024:.1f} MB)")
 
                 # Aggressive GPU cleanup between jobs to prevent OOM
@@ -396,6 +441,25 @@ def _upload_result(job_id: str, glb_data: bytes):
                 time.sleep(5)
             else:
                 raise
+
+
+def _stream_batch(job_id: str, batch_num: int, data: bytes, num_points: int):
+    """Upload a batch of point cloud data for live streaming to frontend."""
+    try:
+        req = urllib.request.Request(
+            f"{BACKEND_URL}/api/v1/gpu/stream/{job_id}?batch={batch_num}&count={num_points}",
+            data=data,
+            headers={
+                "Content-Type": "application/octet-stream",
+                "User-Agent": "gpu-worker/1.0",
+                "X-Batch-Num": str(batch_num),
+                "X-Point-Count": str(num_points),
+            },
+            method="POST",
+        )
+        urllib.request.urlopen(req, timeout=15)
+    except Exception as e:
+        logger.warning(f"Stream batch {batch_num} upload failed: {e}")
 
 
 if __name__ == "__main__":

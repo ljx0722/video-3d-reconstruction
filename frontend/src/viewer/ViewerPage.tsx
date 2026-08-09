@@ -43,6 +43,46 @@ export default function ViewerPage() {
   const measurePtsRef = useRef<THREE.Vector3[]>([]);
   const [distance, setDistance] = useState<number | null>(null);
 
+  // Streaming
+  const [streamBuffer, setStreamBuffer] = useState<Float32Array | null>(null);
+  const [streamAppend, setStreamAppend] = useState(false);
+  const wsRef = useRef<WebSocket | null>(null);
+
+  // Connect WebSocket for live point cloud streaming during processing
+  useEffect(() => {
+    if (!jobId) return;
+    const status = (job as any)?.status;
+    if (status !== 'processing' && status !== 'uploaded') return;
+
+    const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const ws = new WebSocket(`${proto}//${location.host}/ws/${jobId}`);
+    ws.binaryType = 'arraybuffer';
+    wsRef.current = ws;
+
+    ws.onmessage = (e) => {
+      if (e.data instanceof ArrayBuffer) {
+        const bytes = new Uint8Array(e.data);
+        // Find null byte separator between JSON header and binary
+        let nullIdx = -1;
+        for (let i = 0; i < Math.min(bytes.length, 200); i++) {
+          if (bytes[i] === 0) { nullIdx = i; break; }
+        }
+        if (nullIdx > 0) {
+          const header = JSON.parse(new TextDecoder().decode(bytes.slice(0, nullIdx)));
+          if (header.type === 'batch') {
+            const fdata = bytes.slice(nullIdx + 1);
+            const floats = new Float32Array(fdata.buffer, fdata.byteOffset, fdata.byteLength / 4);
+            setStreamBuffer(floats);
+            setStreamAppend(header.batch > 0);
+          }
+        }
+      }
+    };
+    ws.onerror = () => {};  // Fallback to polling-based progress
+
+    return () => { ws.close(); wsRef.current = null; };
+  }, [jobId, job?.status]);
+
   // Refs
   const pointsRef = useRef<THREE.Points | null>(null);
   const originalData = useRef<{ pos: Float32Array; col: Float32Array } | null>(null);
@@ -331,12 +371,17 @@ export default function ViewerPage() {
       {/* Main */}
       <div className="flex-1 relative bg-black">
         <div className="absolute inset-0" ref={el=>{if(el){const c=el.querySelector('canvas');if(c&&c!==canvasEl)setCanvasEl(c as HTMLCanvasElement);}}} />
-        {job.status==='completed'?(
+        {(job.status==='completed' || (job as any).status==='processing')?(
           <>
             <ViewerCanvas jobId={job.id} pointSize={pointSize} opacity={opacity}
               onPointsReady={handlePointsReady} boxClip={boxClip}
               showAxes={showAxes} orthographic={orthographic} splatMode={splatMode}
-              showGrid={showGrid} edlStrength={edlStrength} />
+              showGrid={showGrid} edlStrength={edlStrength}
+              streamBuffer={(job as any).status === 'processing' ? streamBuffer : null}
+              streamAppend={streamAppend}
+              liveMode={(job as any).status === 'processing'}
+            />
+            {(job as any).status !== 'processing' && (
             <ControlsPanel
               pointSize={pointSize} setPointSize={setPointSize}
               opacity={opacity} setOpacity={setOpacity}
@@ -358,6 +403,7 @@ export default function ViewerPage() {
               onAutoClip={doAutoClip}
               edlStrength={edlStrength} setEdlStrength={setEdlStrength}
             />
+            )}
           </>
         ):job.status==='failed'?(
           <div className="absolute inset-0 flex items-center justify-center text-gray-500"><div className="text-center"><div className="text-4xl mb-3">!</div><p>处理失败</p></div></div>
