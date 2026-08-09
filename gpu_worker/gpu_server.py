@@ -21,7 +21,7 @@ logger = logging.getLogger("gpu-worker")
 
 BACKEND_URL = os.environ.get("SEALOS_BACKEND_URL", "https://video2gauss.sealoshzh.site").rstrip("/")
 POLL_INTERVAL = int(os.environ.get("POLL_INTERVAL", "5"))
-CHECKPOINT_PATH = os.environ.get("MODEL_PATH", "./checkpoint/lingbot-map.pt")
+CHECKPOINT_PATH = os.environ.get("MODEL_PATH") or os.environ.get("CHECKPOINT_PATH") or "/root/autodl-tmp/lingbot-map.pt"
 
 # ── Model loading (lazy, loaded on first request) ──────────────────────────
 _model = None
