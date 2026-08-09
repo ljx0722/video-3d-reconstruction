@@ -5,6 +5,7 @@ import * as THREE from 'three';
 import { getJob } from '../api/client';
 import ViewerCanvas from './ViewerCanvas';
 import ControlsPanel from './ControlsPanel';
+import CrossSectionView from './CrossSectionView';
 import { type BoxClip } from './Toolbar';
 import type { Job } from '../types';
 
@@ -87,6 +88,7 @@ export default function ViewerPage() {
   // Refs
   const pointsRef = useRef<THREE.Points | null>(null);
   const originalData = useRef<{ pos: Float32Array; col: Float32Array } | null>(null);
+  const [rawSectionData, setRawSectionData] = useState<{ pos: Float32Array; col: Float32Array } | null>(null);
   const [canvasEl, setCanvasEl] = useState<HTMLCanvasElement | null>(null);
 
   // Measure click
@@ -128,10 +130,10 @@ export default function ViewerPage() {
       const pos = mesh.geometry.getAttribute('position');
       const col = mesh.geometry.getAttribute('color');
       if (pos) {
-        originalData.current = {
-          pos: (pos.array as Float32Array).slice(),
-          col: col ? (col.array as Float32Array).slice() : new Float32Array(pos.count * 3).fill(1),
-        };
+        const posCopy = (pos.array as Float32Array).slice();
+        const colCopy = col ? (col.array as Float32Array).slice() : new Float32Array(pos.count * 3).fill(1);
+        originalData.current = { pos: posCopy, col: colCopy };
+        setRawSectionData({ pos: posCopy, col: colCopy });
         setOriginalCount(pos.count);
         setPointCount(pos.count);
       }
@@ -389,6 +391,8 @@ export default function ViewerPage() {
               liveMode={(job as any).status === 'processing'}
             />
             {(job as any).status !== 'processing' && (
+            <>
+            <CrossSectionView positions={rawSectionData?.pos ?? null} colors={rawSectionData?.col ?? null} />
             <ControlsPanel
               pointSize={pointSize} setPointSize={setPointSize}
               opacity={opacity} setOpacity={setOpacity}
@@ -411,6 +415,7 @@ export default function ViewerPage() {
               edlStrength={edlStrength} setEdlStrength={setEdlStrength}
               showTrajectory={showTrajectory} setShowTrajectory={setShowTrajectory}
             />
+            </>
             )}
           </>
         ):job.status==='failed'?(

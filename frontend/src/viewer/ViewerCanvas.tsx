@@ -1,6 +1,6 @@
 import { Suspense, useState, useCallback, useRef } from 'react';
 import { Canvas, useFrame } from '@react-three/fiber';
-import { OrbitControls, GizmoHelper, GizmoViewport, Grid, Html, Line } from '@react-three/drei';
+import { OrbitControls, GizmoHelper, GizmoViewport, Grid, Html, Line, OrthographicCamera, PerspectiveCamera } from '@react-three/drei';
 import * as THREE from 'three';
 import { getResultUrl } from '../api/client';
 import ModelLoader from './ModelLoader';
@@ -47,13 +47,11 @@ function CameraTrail({ positions }: { positions: Float32Array }) {
   const n = positions.length / 3;
   if (n < 2) return null;
 
-  // Sort positions by spatial proximity (nearest-neighbor chain)
   const pts: THREE.Vector3[] = [];
   for (let i = 0; i < n; i++) {
     pts.push(new THREE.Vector3(positions[i*3], positions[i*3+1], positions[i*3+2]));
   }
 
-  // Simple spatial sort: start from first, chain nearest neighbors
   const sorted: THREE.Vector3[] = [pts[0]];
   const remaining = new Set(pts.slice(1).map((_, i) => i + 1));
   while (remaining.size > 0) {
@@ -70,13 +68,9 @@ function CameraTrail({ positions }: { positions: Float32Array }) {
 
   const linePoints = sorted.map(p => [p.x, p.y, p.z] as [number, number, number]);
 
-  // Colors: gradient blue → purple → red
   const colors = sorted.map((_, i) => {
     const t = i / Math.max(1, sorted.length - 1);
-    const r = t;
-    const g = 0.2 + (1 - Math.abs(t - 0.5) * 2) * 0.4;
-    const b = 1 - t;
-    return [r, g, b] as [number, number, number];
+    return [t, 0.2 + (1 - Math.abs(t - 0.5) * 2) * 0.4, 1 - t] as [number, number, number];
   });
 
   const center = sorted[Math.floor(sorted.length / 2)];
@@ -84,18 +78,15 @@ function CameraTrail({ positions }: { positions: Float32Array }) {
   return (
     <group>
       <Line points={linePoints} color="white" lineWidth={1.5} vertexColors={colors} />
-      {/* Trajectory label */}
       <Html position={[center.x, center.y + 0.3, center.z]} center>
         <div className="bg-gray-900/80 backdrop-blur px-2 py-0.5 rounded text-[10px] text-gray-400 whitespace-nowrap border border-gray-700 select-none">
           摄像机轨迹 · {n} 帧
         </div>
       </Html>
-      {/* Start marker */}
       <mesh position={sorted[0].toArray()}>
         <sphereGeometry args={[0.025, 8, 8]} />
         <meshBasicMaterial color="#3B82F6" />
       </mesh>
-      {/* End marker */}
       <mesh position={sorted[sorted.length - 1].toArray()}>
         <sphereGeometry args={[0.025, 8, 8]} />
         <meshBasicMaterial color="#EF4444" />
@@ -104,7 +95,7 @@ function CameraTrail({ positions }: { positions: Float32Array }) {
   );
 }
 
-function ZoomAwareControls() {
+function ZoomAwareControls({ orthographic }: { orthographic: boolean }) {
   const ref = useRef<any>(null);
 
   useFrame(() => {
@@ -117,6 +108,7 @@ function ZoomAwareControls() {
   return (
     <OrbitControls
       ref={ref}
+      key={orthographic ? 'oc-ortho' : 'oc-persp'}
       enableDamping dampingFactor={0.08}
       minDistance={0.01} maxDistance={500}
       minPolarAngle={0} maxPolarAngle={Math.PI}
@@ -159,15 +151,16 @@ export default function ViewerCanvas({
 
   return (
     <Canvas
-      key={orthographic ? 'ortho' : 'persp'}
       className="!absolute inset-0"
       gl={{ preserveDrawingBuffer: true, antialias: true, localClippingEnabled: true }}
-      orthographic={orthographic}
-      camera={orthographic
-        ? { position: [2, 1, 3], zoom: 80, near: 0.1, far: 200 }
-        : { position: [2, 1, 3], fov: 50 }}
       style={{ background: '#0a0a0f' }}
     >
+      {orthographic ? (
+        <OrthographicCamera makeDefault position={[2, 1, 3]} zoom={80} near={0.01} far={200} />
+      ) : (
+        <PerspectiveCamera makeDefault position={[2, 1, 3]} fov={50} near={0.01} far={200} />
+      )}
+
       <ambientLight intensity={0.6} />
       <directionalLight position={[5, 5, 5]} intensity={0.4} />
 
@@ -203,13 +196,12 @@ export default function ViewerCanvas({
 
       {showAxes && <AxesHelper3D />}
 
-      <GizmoHelper alignment="top-right" margin={[80, 80]}>
+      <GizmoHelper alignment="top-right" margin={[60, 60]}>
         <GizmoViewport axisColors={['#ef4444', '#22c55e', '#3b82f6']} labelColor="#9ca3af" />
       </GizmoHelper>
 
-      <ZoomAwareControls />
+      <ZoomAwareControls orthographic={orthographic ?? false} />
 
-      {/* Potree-style post-processing */}
       <EDLEffect edlStrength={edlStrength} />
     </Canvas>
   );
