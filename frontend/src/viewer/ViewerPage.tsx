@@ -534,7 +534,7 @@ export default function ViewerPage() {
             </div>
           )}
           {job.status==='completed'&&<div className="mb-4 text-sm text-green-400">&#x2713; 处理完成</div>}
-          {job.status==='failed'&&<div className="mb-4 p-2 bg-red-500/10 border border-red-500/20 rounded text-xs text-red-400">处理失败: {job.error_message||'未知错误'}</div>}
+          {job.status==='failed'&&<div className="mb-4 p-2 bg-red-500/10 border border-red-500/20 rounded text-xs text-red-400">处理失败: {job.error_message || (job as any).detail || '未知错误'}</div>}
           <div className="space-y-1">
             {statusSteps.map((step,i)=>(
               <div key={i} className={`flex items-center gap-2 py-1 px-2 rounded text-xs ${i===currentStep?'bg-blue-500/10 text-blue-400':i<currentStep?'text-green-400/70':'text-gray-600'}`}>

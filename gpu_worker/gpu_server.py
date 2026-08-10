@@ -435,7 +435,8 @@ def poll_and_process():
 
 def _update_status(job_id: str, status: str, progress: float, detail: str = "",
                    num_frames: int = 0, num_points: int = 0, processing_time_secs: float = 0):
-    payload = {"status": status, "progress": progress, "detail": detail, "error_message": "",
+    payload = {"status": status, "progress": progress, "detail": detail,
+               "error_message": detail if status == "failed" else "",
                "num_frames": int(num_frames), "num_points": int(num_points),
                "processing_time_secs": float(processing_time_secs)}
     data = json.dumps(payload).encode()
