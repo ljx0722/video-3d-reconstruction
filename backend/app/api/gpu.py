@@ -112,6 +112,19 @@ async def upload_result_raw(job_id: str, request: Request):
     return {"ok": True}
 
 
+@router.post("/result_mesh/{job_id}")
+async def upload_result_mesh(job_id: str, request: Request):
+    """Accept raw binary GLB mesh upload from GPU worker."""
+    glb_data = await request.body()
+    job_dir = os.path.join(settings.upload_dir, job_id)
+    os.makedirs(job_dir, exist_ok=True)
+    mesh_path = os.path.join(job_dir, "result_mesh.glb")
+    with open(mesh_path, "wb") as f:
+        f.write(glb_data)
+    logger.info(f"GPU mesh saved for job {job_id}: {len(glb_data)/1024/1024:.1f} MB")
+    return {"ok": True}
+
+
 # ── Streaming WebSocket manager ──────────────────────────────────
 _stream_connections: dict[str, list] = {}
 

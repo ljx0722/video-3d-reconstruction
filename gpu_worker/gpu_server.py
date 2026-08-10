@@ -89,8 +89,8 @@ def _find_checkpoint():
 
 
 # ── Inference pipeline ──────────────────────────────────────────────────────
-def process_video(video_path: str, settings: dict, job_id: str) -> bytes:
-    """Run lingbot-map inference and return GLB bytes. Cleans temp dirs after."""
+def process_video(video_path: str, settings: dict, job_id: str):
+    """Run lingbot-map inference and return (glb_bytes, mesh_bytes_or_None). Cleans temp dirs after."""
     import torch
     import cv2
     import numpy as np
@@ -358,9 +358,11 @@ def process_video(video_path: str, settings: dict, job_id: str) -> bytes:
     glb_path = os.path.join(tmpdir, "output.glb")
     scene = predictions_to_glb(vis_pred_sub, conf_thres=conf_pct_val, show_cam=True, mask_sky=False)
     scene.export(glb_path)
-    # Read GLB into memory, cleanup temp dir
     with open(glb_path, "rb") as f:
         glb_data = f.read()
+
+    # ── Mesh reconstruction (Open3D Poisson) ───────────────────────────
+    mesh_data = _build_mesh(vis_pred_sub, conf_pct_val, tmpdir)
 
     import shutil as _shutil
     _shutil.rmtree(tmpdir, ignore_errors=True)
@@ -368,7 +370,7 @@ def process_video(video_path: str, settings: dict, job_id: str) -> bytes:
     size_mb = len(glb_data) / (1024 * 1024)
     logger.info(f"GLB exported: {size_mb:.1f} MB, {num_frames} frames, elapsed={elapsed:.1f}s")
 
-    return glb_data
+    return glb_data, mesh_data
 
 def poll_and_process():
     """Main loop: poll for pending jobs, process them, upload results."""
@@ -422,20 +424,26 @@ def poll_and_process():
                 _update_status(job_id, "processing", 0.1)
 
                 # Run inference
-                glb_data = process_video(video_tmp, settings, job_id)
+                glb_data, mesh_data = process_video(video_tmp, settings, job_id)
                 os.unlink(video_tmp)
 
                 # Upload GLB result
                 _update_status(job_id, "processing", 0.9)
                 _upload_result(job_id, glb_data)
 
+                # Upload mesh result if available
+                if mesh_data:
+                    _update_status(job_id, "processing", 0.95, "上传Mesh模型...")
+                    _upload_mesh(job_id, mesh_data)
+
                 # Final stream status
                 _update_status(job_id, "completed", 1.0)
 
-                logger.info(f"Job {job_id} completed ({len(glb_data)/1024/1024:.1f} MB)")
+                logger.info(f"Job {job_id} completed ({len(glb_data)/1024/1024:.1f} MB, mesh {len(mesh_data)/1024/1024:.1f} MB)" if mesh_data else f"Job {job_id} completed ({len(glb_data)/1024/1024:.1f} MB)")
 
                 # Aggressive GPU cleanup between jobs to prevent OOM
                 del glb_data
+                if mesh_data: del mesh_data
                 import gc; gc.collect()
                 try:
                     import torch as _torch
@@ -493,7 +501,129 @@ def _upload_result(job_id: str, glb_data: bytes):
             else:
                 raise
 
-def _push_stream_batch(job_id: str, data: bytes, batch: int, frame_count: int):
+def _build_mesh(vis_pred: dict, conf_pct: float, tmpdir: str) -> bytes | None:
+    """Build triangle mesh from world points using Open3D Poisson reconstruction.
+    Returns GLB bytes or None if reconstruction failed."""
+    try:
+        import open3d as o3d
+    except ImportError:
+        logger.warning("open3d not available, skipping mesh reconstruction")
+        return None
+
+    try:
+        import numpy as np  # already imported by caller but be safe
+
+        xyz = vis_pred.get("world_points_from_depth") or vis_pred.get("world_points")
+        if xyz is None:
+            logger.warning("No world_points for mesh")
+            return None
+
+        images_arr = vis_pred.get("images")
+        depth_conf_arr = vis_pred.get("depth_conf")
+
+        # Flatten world points: (F, H, W, 3) → (M, 3)
+        xyz_flat = xyz.reshape(-1, 3).astype(np.float64)
+
+        # Confidence filtering
+        if depth_conf_arr is not None:
+            conf_flat = depth_conf_arr.ravel()
+            cutoff = np.percentile(conf_flat, max(0, conf_pct)) if conf_flat.size > 0 else 0
+            mask = conf_flat > cutoff
+            xyz_flat = xyz_flat[mask]
+            logger.info(f"Mesh input: {xyz_flat.shape[0]} pts after conf > {conf_pct}%")
+        else:
+            logger.info(f"Mesh input: {xyz_flat.shape[0]} pts (no conf filter)")
+
+        if xyz_flat.shape[0] < 1000:
+            return None
+
+        # ── Color handling ──────────────────────────────────────────────
+        if images_arr is not None:
+            # images: (F, C, H, W) or (F, H, W, C)
+            if images_arr.ndim == 4 and images_arr.shape[1] == 3:
+                images_arr = np.transpose(images_arr, (0, 2, 3, 1))  # → (F, H, W, 3)
+            rgb_flat = images_arr.reshape(-1, 3).astype(np.float64)
+            if depth_conf_arr is not None:
+                rgb_flat = rgb_flat[mask]
+        else:
+            rgb_flat = np.full_like(xyz_flat, 0.6, dtype=np.float64)
+
+        # ── Build Open3D point cloud ────────────────────────────────────
+        pcd = o3d.geometry.PointCloud()
+        pcd.points = o3d.utility.Vector3dVector(xyz_flat)
+        if rgb_flat is not None:
+            pcd.colors = o3d.utility.Vector3dVector(np.clip(rgb_flat, 0, 1))
+
+        # ── Downsample ──────────────────────────────────────────────────
+        bbox_diag = np.linalg.norm(pcd.get_max_bound() - pcd.get_min_bound())
+        voxel_size = max(0.005, bbox_diag * 0.003)
+        pcd = pcd.voxel_down_sample(voxel_size)
+        logger.info(f"Mesh downsample: {len(pcd.points)} pts (voxel={voxel_size:.4f})")
+
+        if len(pcd.points) < 100:
+            return None
+
+        # ── Normal estimation ───────────────────────────────────────────
+        radius = max(voxel_size * 3, bbox_diag * 0.01)
+        pcd.estimate_normals(o3d.geometry.KDTreeSearchParamHybrid(radius=radius, max_nn=30))
+        pcd.orient_normals_towards_camera_location()
+
+        # ── Poisson reconstruction ──────────────────────────────────────
+        depth = 8 if len(pcd.points) < 200000 else 9
+        mesh, densities = o3d.geometry.TriangleMesh.create_from_point_cloud_poisson(pcd, depth=depth)
+
+        # Remove low-density triangles (bottom 5%)
+        if densities is not None and len(densities) > 0:
+            thresh = np.quantile(densities, 0.05)
+            vertices_to_remove = densities < thresh
+            mesh.remove_vertices_by_mask(vertices_to_remove)
+
+        logger.info(f"Poisson mesh: {len(mesh.vertices)} verts, {len(mesh.triangles)} faces (depth={depth})")
+
+        if len(mesh.triangles) < 10:
+            return None
+
+        # ── Vertex color transfer (KDTree nearest-neighbor) ─────────────
+        pcd_tree = o3d.geometry.KDTreeFlann(pcd)
+        mesh_verts = np.asarray(mesh.vertices, dtype=np.float64)
+        mesh_colors = np.zeros_like(mesh_verts)
+        pcd_pts = np.asarray(pcd.points)
+        pcd_cols = np.asarray(pcd.colors)
+        for i in range(len(mesh_verts)):
+            _, idx, _ = pcd_tree.search_knn_vector_3d(mesh_verts[i], 1)
+            mesh_colors[i] = pcd_cols[idx[0]]
+        mesh.vertex_colors = o3d.utility.Vector3dVector(np.clip(mesh_colors, 0, 1))
+
+        # Export GLB
+        mesh_path = os.path.join(tmpdir, "mesh.glb")
+        o3d.io.write_triangle_mesh(mesh_path, mesh)
+        with open(mesh_path, "rb") as f:
+            return f.read()
+
+    except Exception:
+        logger.exception("Mesh reconstruction failed")
+        return None
+
+def _upload_mesh(job_id: str, mesh_data: bytes):
+    for attempt in range(3):
+        try:
+            req = urllib.request.Request(
+                f"{BACKEND_URL}/api/v1/gpu/result_mesh/{job_id}",
+                data=mesh_data,
+                headers={
+                    "Content-Type": "application/octet-stream",
+                    "User-Agent": "gpu-worker/1.0",
+                },
+                method="POST",
+            )
+            urllib.request.urlopen(req, timeout=300)
+            return
+        except Exception as e:
+            if attempt < 2:
+                logger.warning(f"Mesh upload attempt {attempt+1} failed, retrying: {e}")
+                time.sleep(5)
+            else:
+                raise
     """Push a point cloud batch to the backend for live streaming to WebSocket clients."""
     try:
         req = urllib.request.Request(

@@ -7,12 +7,14 @@ interface Props {
   pointSize: number;
   opacity?: number;
   onPointsReady?: (mesh: THREE.Points, count: number) => void;
+  onMeshReady?: (mesh: THREE.Group) => void;
   onCameraPositions?: (positions: Float32Array) => void;
   clipPlanes?: THREE.Plane[];
   splatMode?: boolean;
+  viewMode?: 'points' | 'gaussian' | 'mesh' | 'wireframe';
 }
 
-export default function ModelLoader({ url, pointSize, opacity = 1, onPointsReady, onCameraPositions, clipPlanes, splatMode }: Props) {
+export default function ModelLoader({ url, pointSize, opacity = 1, onPointsReady, onMeshReady, onCameraPositions, clipPlanes, splatMode, viewMode = 'points' }: Props) {
   const { scene } = useGLTF(url);
   const [splatTex] = useState(() => {
     const c = document.createElement('canvas');
@@ -28,12 +30,21 @@ export default function ModelLoader({ url, pointSize, opacity = 1, onPointsReady
     return new THREE.CanvasTexture(c);
   });
 
-  const points = useMemo(() => {
+  const { points, meshes } = useMemo(() => {
     const pcPos: number[] = [];
     const pcCol: number[] = [];
     const camPos: number[] = [];
+    const meshList: THREE.Mesh[] = [];
 
     scene.traverse((child: any) => {
+      if (child.isMesh) {
+        // Found a mesh geometry (triangles/faces)
+        const geo = child.geometry as THREE.BufferGeometry | undefined;
+        if (geo && geo.index) {
+          meshList.push(child.clone());
+        }
+        return;
+      }
       const geo = child.geometry as THREE.BufferGeometry | undefined;
       if (!geo || !geo.getAttribute) return;
       const pos = geo.getAttribute('position');
@@ -52,33 +63,72 @@ export default function ModelLoader({ url, pointSize, opacity = 1, onPointsReady
     });
 
     if (camPos.length > 0 && onCameraPositions) onCameraPositions(new Float32Array(camPos));
-    if (pcPos.length === 0) return null;
 
-    const geo = new THREE.BufferGeometry();
-    geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(pcPos), 3));
-    geo.setAttribute('color', new THREE.BufferAttribute(new Float32Array(pcCol), 3));
+    let pts: THREE.Points | null = null;
+    if (pcPos.length > 0) {
+      const geo = new THREE.BufferGeometry();
+      geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(pcPos), 3));
+      geo.setAttribute('color', new THREE.BufferAttribute(new Float32Array(pcCol), 3));
+      const isGaussian = splatMode || viewMode === 'gaussian';
+      const mat = new THREE.PointsMaterial({
+        size: isGaussian ? pointSize * 4 : pointSize, vertexColors: true, sizeAttenuation: true,
+        depthWrite: isGaussian ? false : true,
+        blending: isGaussian ? THREE.AdditiveBlending : THREE.NormalBlending,
+        transparent: true, opacity, clippingPlanes: clipPlanes || [], clipShadows: true,
+        map: isGaussian ? splatTex : null, depthTest: true,
+      });
+      pts = new THREE.Points(geo, mat);
+    }
 
-    const mat = new THREE.PointsMaterial({
-      size: splatMode ? pointSize * 4 : pointSize, vertexColors: true, sizeAttenuation: true,
-      depthWrite: splatMode ? false : true,
-      blending: splatMode ? THREE.AdditiveBlending : THREE.NormalBlending,
-      transparent: true, opacity, clippingPlanes: clipPlanes || [], clipShadows: true,
-      map: splatMode ? splatTex : null, depthTest: true,
-    });
-    return new THREE.Points(geo, mat);
+    return { points: pts, meshes: meshList };
   }, [scene]);
 
-  useEffect(() => { if (points) (points.material as THREE.PointsMaterial).size = splatMode ? pointSize * 4 : pointSize; }, [pointSize, points, splatMode]);
+  // Build mesh group when viewMode is mesh or wireframe
+  const meshGroup = useMemo(() => {
+    if (meshes.length === 0) return null;
+    const group = new THREE.Group();
+    meshes.forEach(m => {
+      if (viewMode === 'wireframe') {
+        const wGeo = new THREE.WireframeGeometry(m.geometry);
+        const wLine = new THREE.LineSegments(wGeo, new THREE.LineBasicMaterial({ color: '#3b82f6', transparent: true, opacity: 0.6 }));
+        group.add(wLine);
+        return;
+      }
+      const clonedMat = (m.material as THREE.MeshStandardMaterial).clone();
+      clonedMat.clipShadows = true;
+      clonedMat.clippingPlanes = clipPlanes || [];
+      const clonedMesh = new THREE.Mesh(m.geometry, clonedMat);
+      group.add(clonedMesh);
+    });
+    return group;
+  }, [meshes, viewMode, clipPlanes]);
+
+  useEffect(() => { if (points) (points.material as THREE.PointsMaterial).size = (splatMode || viewMode === 'gaussian') ? pointSize * 4 : pointSize; }, [pointSize, points, splatMode, viewMode]);
   useEffect(() => { if (points) (points.material as THREE.PointsMaterial).opacity = opacity; }, [opacity, points]);
   useEffect(() => { if (points) (points.material as THREE.PointsMaterial).clippingPlanes = clipPlanes || []; }, [clipPlanes, points]);
 
   useEffect(() => {
-    if (points && onPointsReady) {
+    if (points && onPointsReady && (viewMode === 'points' || viewMode === 'gaussian')) {
       const pos = points.geometry.getAttribute('position');
       onPointsReady(points, pos ? pos.count : 0);
     }
-  }, [points, onPointsReady]);
+  }, [points, onPointsReady, viewMode]);
 
-  if (!points) return null;
-  return <primitive object={points} />;
+  useEffect(() => {
+    if (meshGroup && onMeshReady && (viewMode === 'mesh' || viewMode === 'wireframe')) {
+      onMeshReady(meshGroup);
+    }
+  }, [meshGroup, onMeshReady, viewMode]);
+
+  if (!points && !meshGroup) return null;
+
+  const showMesh = (viewMode === 'mesh' || viewMode === 'wireframe') && meshGroup;
+  const showPoints = (viewMode === 'points' || viewMode === 'gaussian');
+
+  return (
+    <>
+      {showMesh && <primitive object={meshGroup} />}
+      {showPoints && points && <primitive object={points} />}
+    </>
+  );
 }

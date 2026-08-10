@@ -2,7 +2,7 @@ import { Suspense, useState, useCallback, useRef } from 'react';
 import { Canvas, useFrame } from '@react-three/fiber';
 import { TrackballControls, GizmoHelper, GizmoViewport, Grid, Html, Line, OrthographicCamera, PerspectiveCamera } from '@react-three/drei';
 import * as THREE from 'three';
-import { getResultUrl } from '../api/client';
+import { getResultUrl, getMeshUrl } from '../api/client';
 import ModelLoader from './ModelLoader';
 import StreamLoader from './StreamLoader';
 import EDLEffect from './EDLEffect';
@@ -13,6 +13,7 @@ interface Props {
   pointSize: number;
   opacity?: number;
   onPointsReady?: (mesh: THREE.Points, count?: number) => void;
+  onMeshReady?: (mesh: THREE.Group) => void;
   boxClip?: BoxClip;
   showAxes?: boolean;
   orthographic?: boolean;
@@ -24,6 +25,8 @@ interface Props {
   streamAppend?: boolean;
   liveMode?: boolean;
   orbitTarget?: [number, number, number];
+  viewMode?: 'points' | 'gaussian' | 'mesh' | 'wireframe';
+  meshAvailable?: boolean;
 }
 
 function BoxWireframe({ boxClip }: { boxClip: BoxClip }) {
@@ -127,10 +130,10 @@ function AxesHelper3D() {
 }
 
 export default function ViewerCanvas({
-  jobId, pointSize, opacity = 1, onPointsReady,
+  jobId, pointSize, opacity = 1, onPointsReady, onMeshReady,
   boxClip, showAxes, orthographic, splatMode, showGrid, showTrajectory = true,
   edlStrength = 0.4, streamBuffer, streamAppend, liveMode,
-  orbitTarget = [0, 0, 0],
+  orbitTarget = [0, 0, 0], viewMode = 'points', meshAvailable = false,
 }: Props) {
   const [camPositions, setCamPositions] = useState<Float32Array | null>(null);
   const defaultBox: BoxClip = boxClip || { enabled: false, min: [-1, -0.5, -1], max: [1, 0.5, 1] };
@@ -174,13 +177,15 @@ export default function ViewerCanvas({
           />
         ) : (
           <ModelLoader
-            url={getResultUrl(jobId)}
+            url={(viewMode === 'mesh' || viewMode === 'wireframe') && meshAvailable ? getMeshUrl(jobId) : getResultUrl(jobId)}
             pointSize={pointSize}
             opacity={opacity}
             onPointsReady={onPointsReady as any}
+            onMeshReady={onMeshReady as any}
             onCameraPositions={handleCameras}
             clipPlanes={threeClipPlanes}
             splatMode={splatMode}
+            viewMode={viewMode}
           />
         )}
       </Suspense>

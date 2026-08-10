@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import type { BoxClip } from './Toolbar';
 
-type PanelId = null | 'view' | 'color' | 'filter' | 'clip' | 'measure' | 'export';
+type PanelId = null | 'view' | 'color' | 'filter' | 'clip' | 'measure' | 'export' | 'viewmode';
 
 interface CtrlProps {
   pointSize: number; setPointSize: (v: number) => void;
@@ -25,6 +25,8 @@ interface CtrlProps {
   showGrid: boolean; setShowGrid: (v: boolean) => void;
   onAutoClip: () => void;
   edlStrength: number; setEdlStrength: (v: number) => void;
+  viewMode?: string; setViewMode?: (v: string) => void;
+  meshAvailable?: boolean;
 }
 
 const Btn = ({ label, active, icon, onClick }: { label: string; active: boolean; icon: string; onClick: () => void }) => (
@@ -100,6 +102,12 @@ export default function ControlsPanel(p: CtrlProps) {
 
         {/* Grid */}
         <Btn icon="⊡" label="网格" active={p.showGrid} onClick={() => p.setShowGrid(!p.showGrid)} />
+
+        {/* View Mode: Points / Gaussian / Mesh / Wireframe */}
+        <Btn icon="◈" label="显示模式" active={panel === 'viewmode'} onClick={() => toggle('viewmode')} />
+        {panel === 'viewmode' && (
+          <ViewModePanel viewMode={p.viewMode || 'points'} setViewMode={p.setViewMode || (() => {})} meshAvailable={p.meshAvailable ?? false} />
+        )}
 
         {/* Snap / Reset View */}
         <Btn icon="⌂" label="复位视图" active={false} onClick={p.onResetView} />
@@ -279,6 +287,31 @@ function ExportPanel({ onExport }: { onExport: (fmt: string) => void }) {
           <button key={fmt} onClick={() => onExport(fmt)}
             className="flex justify-between bg-gray-800/50 hover:bg-gray-700/50 rounded px-2 py-1.5 text-gray-400 hover:text-white transition-colors text-[10px]">
             <span className="font-mono">.{fmt.toLowerCase()}</span><span className="text-gray-600">{desc}</span>
+          </button>
+        ))}
+      </div>
+    </Card>
+  );
+}
+
+/* ── ViewMode Panel ─────────────────────────────────── */
+function ViewModePanel({ viewMode, setViewMode, meshAvailable }: { viewMode: string; setViewMode: (v: string) => void; meshAvailable: boolean }) {
+  return (
+    <Card title="显示模式">
+      <div className="flex flex-col gap-1">
+        {[
+          ['points', '点云', '⊙'],
+          ['gaussian', '高斯溅射', '◉'],
+          ['mesh', 'Mesh 实体', '◈'],
+          ['wireframe', '线框', '⊡'],
+        ].map(([k, label, icon]) => (
+          <button key={k} onClick={() => setViewMode(k)}
+            disabled={((k === 'mesh' || k === 'wireframe') && !meshAvailable)}
+            className={`flex justify-between items-center rounded px-2 py-1.5 text-[10px] transition-colors
+              ${viewMode === k ? 'bg-blue-500/20 text-blue-400 border border-blue-500/30' : 'bg-gray-800/50 text-gray-500 hover:bg-gray-700/50'}
+              ${(k === 'mesh' || k === 'wireframe') && !meshAvailable ? 'opacity-30 cursor-not-allowed' : ''}`}>
+            <span>{icon}</span>
+            <span>{label}</span>
           </button>
         ))}
       </div>

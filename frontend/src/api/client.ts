@@ -60,3 +60,7 @@ export function deleteJob(id: string) {
 export function getResultUrl(jobId: string) {
   return `/files/${jobId}/result.glb`;
 }
+
+export function getMeshUrl(jobId: string) {
+  return `/files/${jobId}/result_mesh.glb`;
+}

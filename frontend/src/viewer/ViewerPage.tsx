@@ -32,6 +32,7 @@ export default function ViewerPage() {
   const [brightness, setBrightness] = useState(1.0);
   const [showGrid, setShowGrid] = useState(false);
   const [edlStrength, setEdlStrength] = useState(0.0);
+  const [viewMode, setViewMode] = useState<string>('points');
 
   // Processing
   const [pointCount, setPointCount] = useState(0);
@@ -86,11 +87,19 @@ export default function ViewerPage() {
     return () => { ws.close(); wsRef.current = null; };
   }, [jobId, job?.status]);
 
+  useEffect(() => {
+    if (!jobId || job?.status !== 'completed') return;
+    fetch(`/files/${jobId}/result_mesh.glb`, { method: 'HEAD' })
+      .then(r => { if (r.ok) setMeshAvailable(true); })
+      .catch(() => {});
+  }, [jobId, job?.status]);
+
   // Refs
   const pointsRef = useRef<THREE.Points | null>(null);
   const originalData = useRef<{ pos: Float32Array; col: Float32Array } | null>(null);
   const [rawSectionData, setRawSectionData] = useState<{ pos: Float32Array; col: Float32Array } | null>(null);
   const [canvasEl, setCanvasEl] = useState<HTMLCanvasElement | null>(null);
+  const [meshAvailable, setMeshAvailable] = useState(false);
 
   // Measure click
   useEffect(() => {
@@ -397,6 +406,8 @@ export default function ViewerPage() {
               showGrid={showGrid} edlStrength={edlStrength}
               showTrajectory={showTrajectory}
               orbitTarget={orbitTarget}
+              viewMode={viewMode as any}
+              meshAvailable={meshAvailable}
               streamBuffer={(job as any).status === 'processing' ? streamBuffer : null}
               streamAppend={streamAppend}
               liveMode={(job as any).status === 'processing'}
@@ -425,6 +436,8 @@ export default function ViewerPage() {
               onAutoClip={doAutoClip}
               edlStrength={edlStrength} setEdlStrength={setEdlStrength}
               showTrajectory={showTrajectory} setShowTrajectory={setShowTrajectory}
+              viewMode={viewMode} setViewMode={setViewMode}
+              meshAvailable={meshAvailable}
             />
             </>
             )}

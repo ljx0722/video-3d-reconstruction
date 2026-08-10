@@ -13,3 +13,12 @@ async def get_result_file(job_id: str):
         raise HTTPException(status_code=404, detail="Result file not found")
     return FileResponse(glb_path, media_type="model/gltf-binary",
                         headers={"Cache-Control": "public, max-age=86400"})
+
+
+@router.get("/{job_id}/result_mesh.glb")
+async def get_mesh_file(job_id: str):
+    mesh_path = os.path.join(storage_service.settings.upload_dir, job_id, "result_mesh.glb")
+    if not os.path.exists(mesh_path):
+        raise HTTPException(status_code=404, detail="Mesh file not found")
+    return FileResponse(mesh_path, media_type="model/gltf-binary",
+                        headers={"Cache-Control": "public, max-age=86400"})
