@@ -135,7 +135,7 @@ function ClipBox({ boxClip, onUpdate }: { boxClip: BoxClip; onUpdate?: (c: BoxCl
   const [mx, my, mz] = boxClip.min; const [Mx, My, Mz] = boxClip.max;
   const ctr: [number, number, number] = [(mx + Mx) / 2, (my + My) / 2, (mz + Mz) / 2];
   const sz: [number, number, number] = [Mx - mx, My - my, Mz - mz];
-  const hScale = Math.max(sz[0], sz[1], sz[2], 0.1) * 0.04;
+  const hScale = Math.max(sz[0], sz[1], sz[2], 0.1) * 0.08;
 
   const handles = [
     { idx: 0, sign:  1 as const, pos: [Mx, ctr[1], ctr[2]] as [number, number, number], col: '#ef4444' },
@@ -217,8 +217,8 @@ function ClipBox({ boxClip, onUpdate }: { boxClip: BoxClip; onUpdate?: (c: BoxCl
       </lineSegments>
       {handles.map((h, i) => (
         <mesh key={i} ref={el => { if (el) handleRefs.current[i] = el; }} position={h.pos}>
-          <boxGeometry args={[hScale, hScale, hScale]} />
-          <meshBasicMaterial color={h.col} />
+          <sphereGeometry args={[hScale * 0.9, 16, 16]} />
+          <meshStandardMaterial color={h.col} emissive={h.col} emissiveIntensity={0.4} roughness={0.3} />
         </mesh>
       ))}
     </group>
