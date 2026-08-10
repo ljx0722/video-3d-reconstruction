@@ -365,13 +365,41 @@ def poll_and_process():
             logger.info(f"Processing job {job_id}...")
 
             try:
-                # Download video
-                video_req = urllib.request.Request(
-                    f"{BACKEND_URL}/api/v1/gpu/video/{job_id}",
-                    headers={"User-Agent": "gpu-worker/1.0"},
-                )
-                video_resp = urllib.request.urlopen(video_req, timeout=300)
-                video_data = video_resp.read()
+                # Download video with retry + backoff
+                video_data = None
+                last_err = None
+                for retry in range(5):
+                    try:
+                        _update_status(job_id, "processing", 0.02,
+                                       f"从后端下载视频{'' if retry==0 else f'重试{retry}/5'}..." if retry==0 else f"下载重试{retry}/5...")
+                        video_req = urllib.request.Request(
+                            f"{BACKEND_URL}/api/v1/gpu/video/{job_id}",
+                            headers={"User-Agent": "gpu-worker/1.0"},
+                        )
+                        # Read in 32KB chunks with socket-level read timeout
+                        resp = urllib.request.urlopen(video_req, timeout=120)
+                        chunks = []
+                        total = 0
+                        while True:
+                            chunk = resp.read(32768)
+                            if not chunk: break
+                            chunks.append(chunk)
+                            total += len(chunk)
+                            # Log progress for large videos
+                            if retry == 0 and total % (5 * 1024 * 1024) < 32768:
+                                _update_status(job_id, "processing", 0.04, f"下载视频 {total//(1024*1024)}MB...")
+                        video_data = b''.join(chunks)
+                        resp.close()
+                        logger.info(f"Downloaded {len(video_data)/1024/1024:.1f} MB")
+                        break
+                    except Exception as e:
+                        last_err = e
+                        logger.warning(f"Download attempt {retry+1}/5 failed: {e}")
+                        if retry < 4:
+                            time.sleep(2 + retry * retry)  # 2s, 3s, 6s, 11s backoff
+                        continue
+                if video_data is None:
+                    raise last_err or Exception("Video download failed after 5 retries")
 
                 with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as f:
                     f.write(video_data)
