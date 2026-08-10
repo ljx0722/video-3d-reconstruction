@@ -45,7 +45,8 @@ const defaultBoxClip: BoxClip = { enabled: false, min: [-1, -0.5, -1], max: [1, 
 export default function ViewerPage() {
   const { jobId } = useParams<{ jobId: string }>();
   const { data: job, error: jobError } = useSWR<Job>(
-    jobId ? `job-${jobId}` : null, () => getJob(jobId!), { refreshInterval: 2000 });
+    jobId ? `job-${jobId}` : null, () => getJob(jobId!),
+    { refreshInterval: (data?: Job) => (data?.status === 'completed' || data?.status === 'failed') ? 0 : 2000 });
 
   // Vis
   const [pointSize, setPointSize] = useState(POINT_SIZE);
@@ -93,7 +94,7 @@ export default function ViewerPage() {
     const h = historyRef.current;
     h.length = historyIdx.current + 1;
     h.push({ pos: o.pos.slice(), col: o.col.slice() });
-    if (h.length > 30) h.shift();
+    if (h.length > 5) h.shift();
     else historyIdx.current = h.length - 1;
   }, []);
 

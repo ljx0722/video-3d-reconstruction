@@ -2,9 +2,9 @@ import os
 import json
 import logging
 import glob as _glob
-from fastapi import APIRouter, UploadFile, File, HTTPException, Body, Request
+from fastapi import APIRouter, Depends, HTTPException, Body, Request
 from fastapi.responses import FileResponse
-from sqlalchemy import select
+from sqlalchemy import select, update
 from app.database import async_session
 from app.models.job import Job
 from app.config import settings
@@ -13,6 +13,15 @@ router = APIRouter(prefix="/api/v1/gpu")
 logger = logging.getLogger(__name__)
 
 GPU_SECRET = os.environ.get("GPU_SECRET", "gpu-worker-secret")
+
+
+async def _verify_gpu(request: Request):
+    """Require GPU Worker authentication in production."""
+    if GPU_SECRET == "gpu-worker-secret":
+        return  # development mode, skip auth
+    auth = request.headers.get("Authorization", "")
+    if auth != f"Bearer {GPU_SECRET}":
+        raise HTTPException(status_code=401, detail="Unauthorized")
 
 
 @router.get("/video/{job_id}")
@@ -25,32 +34,29 @@ async def serve_video(job_id: str):
     return FileResponse(candidates[0], media_type="video/mp4")
 
 
-def _check_auth(request: Request):
-    auth = request.headers.get("Authorization", "")
-    if auth != f"Bearer {GPU_SECRET}" and GPU_SECRET != "gpu-worker-secret":
-        raise HTTPException(status_code=401, detail="Unauthorized")
-
-
-@router.get("/pending")
+@router.get("/pending", dependencies=[Depends(_verify_gpu)])
 async def get_pending_jobs():
+    """Atomically claim up to 3 uploaded jobs for processing."""
     async with async_session() as session:
         result = await session.execute(
             select(Job).where(Job.status == "uploaded").order_by(Job.created_at).limit(3)
         )
         jobs = result.scalars().all()
-        return [
-            {"id": j.id, "settings": json.loads(j.settings) if j.settings else {}}
-            for j in jobs
-        ]
-
-
-@router.get("/video/{job_id}")
-async def download_video(job_id: str):
-    job_dir = os.path.join(settings.upload_dir, job_id)
-    candidates = _glob.glob(os.path.join(job_dir, "video.*"))
-    if not candidates:
-        raise HTTPException(status_code=404, detail="Video file not found")
-    return FileResponse(candidates[0], media_type="video/mp4")
+        output = []
+        for j in jobs:
+            # Atomically claim: UPDATE status WHERE id=X AND status='uploaded'
+            stmt = (
+                update(Job).where(Job.id == j.id, Job.status == "uploaded")
+                .values(status="processing", progress=0.01)
+            )
+            claimed = await session.execute(stmt)
+            if claimed.rowcount and claimed.rowcount > 0:
+                await session.commit()
+                output.append({
+                    "id": j.id,
+                    "settings": json.loads(j.settings) if j.settings else {},
+                })
+        return output
 
 
 @router.post("/status/{job_id}")
@@ -70,12 +76,10 @@ async def update_status(job_id: str, data: dict = Body(...)):
             if data.get("processing_time_secs"):
                 job.processing_time_secs = data["processing_time_secs"]
             detail = data.get("detail", "")
-            # Store detail as part of settings (JSON), since Job model has no detail column
             if detail:
-                import json
                 try:
                     s = json.loads(job.settings or "{}")
-                except:
+                except Exception:
                     s = {}
                 s["_detail"] = detail
                 job.settings = json.dumps(s)
@@ -83,12 +87,11 @@ async def update_status(job_id: str, data: dict = Body(...)):
     return {"ok": True}
 
 
-@router.post("/result/{job_id}")
+@router.post("/result/{job_id}", dependencies=[Depends(_verify_gpu)])
 async def upload_result_raw(job_id: str, request: Request):
     """Accept raw binary GLB upload (used by GPU worker for large files)."""
     content_type = request.headers.get("content-type", "")
     if "multipart" in content_type:
-        # Multipart fallback
         form = await request.form()
         uploaded = form.get("file")
         if uploaded:
@@ -104,7 +107,6 @@ async def upload_result_raw(job_id: str, request: Request):
     with open(glb_path, "wb") as f:
         f.write(glb_data)
 
-    import time as _time
     async with async_session() as session:
         result = await session.execute(select(Job).where(Job.id == job_id))
         job = result.scalar_one_or_none()
@@ -118,7 +120,7 @@ async def upload_result_raw(job_id: str, request: Request):
     return {"ok": True}
 
 
-@router.post("/result_mesh/{job_id}")
+@router.post("/result_mesh/{job_id}", dependencies=[Depends(_verify_gpu)])
 async def upload_result_mesh(job_id: str, request: Request):
     """Accept raw binary GLB mesh upload from GPU worker."""
     glb_data = await request.body()
@@ -129,6 +131,3 @@ async def upload_result_mesh(job_id: str, request: Request):
         f.write(glb_data)
     logger.info(f"GPU mesh saved for job {job_id}: {len(glb_data)/1024/1024:.1f} MB")
     return {"ok": True}
-
-
-# ── Result upload endpoints ──────────────────────────────────

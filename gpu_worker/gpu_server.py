@@ -58,6 +58,7 @@ def load_model():
 
     ckpt_path = _find_checkpoint()
     logger.info(f"Loading checkpoint: {ckpt_path}")
+    # weights_only=False required for GCTStream custom model classes
     ckpt = torch.load(ckpt_path, map_location=_device, weights_only=False)
     state_dict = ckpt.get("model", ckpt)
     _model.load_state_dict(state_dict, strict=False)
@@ -544,7 +545,7 @@ def _build_mesh(vis_pred: dict, conf_pct: float, tmpdir: str) -> bytes | None:
         except Exception:
             pass
 
-        # ── Try Poisson with 60s timeout ────────────────────────────────
+        # ── Try Poisson with 30s timeout ────────────────────────────────
         mesh_result = {}
         exception = {}
 
@@ -558,11 +559,14 @@ def _build_mesh(vis_pred: dict, conf_pct: float, tmpdir: str) -> bytes | None:
 
         t = threading.Thread(target=_run_poisson)
         t.start()
-        t.join(timeout=60)
+        t.join(timeout=30)
 
         if t.is_alive():
-            logger.warning("Poisson timed out after 60s, falling back to Ball Pivoting")
-            t.join(timeout=0)  # release thread, will keep running but we ignore it
+            logger.warning("Poisson timed out after 30s, falling back to Ball Pivoting")
+            # Note: the hung thread can't be killed in CPython. It will leak CPU/VRAM
+            # until the process exits, but we free what we can here.
+            import gc
+            gc.collect()
 
             # ── Ball Pivoting fallback ──────────────────────────────────
             r1, r2, r3 = bbox_diag * 0.02, bbox_diag * 0.05, bbox_diag * 0.15

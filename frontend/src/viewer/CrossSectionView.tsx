@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useRef } from 'react';
 import { Canvas } from '@react-three/fiber';
 import { OrbitControls } from '@react-three/drei';
 import * as THREE from 'three';
@@ -12,9 +12,21 @@ interface Props {
 
 export default function CrossSectionView({ positions, colors }: Props) {
   const [plane, setPlane] = useState<PlaneType>('XZ');
-  const [slicePos, setSlicePos] = useState(0); // -1 to 1, 0 = center
+  const [slicePos, setSlicePos] = useState(0);
   const [thickness, setThickness] = useState(0.02);
-  // Bounding box (recompute only when positions change)
+  const [computeSlice, setComputeSlice] = useState(0);
+  const [computeThick, setComputeThick] = useState(0.02);
+  const rafRef = useRef(0);
+  const setPosThrottled = (v: number) => {
+    setSlicePos(v);
+    cancelAnimationFrame(rafRef.current);
+    rafRef.current = requestAnimationFrame(() => setComputeSlice(v));
+  };
+  const setThickThrottled = (v: number) => {
+    setThickness(v);
+    cancelAnimationFrame(rafRef.current);
+    rafRef.current = requestAnimationFrame(() => setComputeThick(v));
+  };
   const bbox = useMemo(() => {
     if (!positions || positions.length === 0) return null;
     let minX=Infinity,maxX=-Infinity,minY=Infinity,maxY=-Infinity,minZ=Infinity,maxZ=-Infinity;
@@ -35,8 +47,8 @@ export default function CrossSectionView({ positions, colors }: Props) {
     const maxs = [bbox.maxX, bbox.maxY, bbox.maxZ];
     const center = (mins[axisIdx] + maxs[axisIdx]) / 2;
     const halfRange = (maxs[axisIdx] - mins[axisIdx]) / 2 || 0.01;
-    const worldPos = center + slicePos * halfRange;
-    const halfThick = thickness * (maxs[axisIdx] - mins[axisIdx]) / 2;
+    const worldPos = center + computeSlice * halfRange;
+    const halfThick = computeThick * (maxs[axisIdx] - mins[axisIdx]) / 2;
 
     const kept: number[] = [];
     const keptCol: number[] = [];
@@ -57,7 +69,7 @@ export default function CrossSectionView({ positions, colors }: Props) {
       col: new Float32Array(keptCol),
       count: kept.length / 3,
     };
-  }, [positions, colors, bbox, plane, slicePos, thickness]);
+  }, [positions, colors, bbox, plane, computeSlice, computeThick]);
 
   // Camera setup for each plane (orthographic, looking perpendicular)
   const extent = bbox ? Math.max(bbox.maxX-bbox.minX, bbox.maxY-bbox.minY, bbox.maxZ-bbox.minZ) || 1 : 1;
@@ -115,13 +127,13 @@ export default function CrossSectionView({ positions, colors }: Props) {
           <div className="flex items-center gap-1">
             <span className="text-[9px] text-gray-500 w-7">位置</span>
             <input type="range" min={-1} max={1} step={0.01} value={slicePos}
-              onChange={e => setSlicePos(Number(e.target.value))} className="flex-1 accent-blue-500 h-1" />
+              onChange={e => setPosThrottled(Number(e.target.value))} className="flex-1 accent-blue-500 h-1" />
             <span className="text-[9px] text-gray-500 w-6 text-right">{slicePos.toFixed(1)}</span>
           </div>
           <div className="flex items-center gap-1">
             <span className="text-[9px] text-gray-500 w-7">厚度</span>
             <input type="range" min={0.005} max={0.15} step={0.005} value={thickness}
-              onChange={e => setThickness(Number(e.target.value))} className="flex-1 accent-blue-500 h-1" />
+              onChange={e => setThickThrottled(Number(e.target.value))} className="flex-1 accent-blue-500 h-1" />
             <span className="text-[9px] text-gray-500 w-6 text-right">{thickness.toFixed(3)}</span>
           </div>
         </div>

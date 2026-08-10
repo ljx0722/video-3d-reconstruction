@@ -219,7 +219,8 @@ function ClipBox({ boxClip, onUpdate }: { boxClip: BoxClip; onUpdate?: (c: BoxCl
     const g = new THREE.BoxGeometry(sz[0], sz[1], sz[2]);
     g.translate(ctr[0], ctr[1], ctr[2]);
     return g;
-  }, [sz, ctr]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sz[0], sz[1], sz[2], ctr[0], ctr[1], ctr[2]]);
 
   return (
     <group>
@@ -300,13 +301,14 @@ function CameraTrail({ positions }: { positions: Float32Array }) {
 function AdaptiveControls({ target }: { target: [number, number, number] }) {
   const ref = useRef<any>(null);
 
-  useFrame(({ camera }) => {
+  useFrame(({ camera, invalidate }) => {
     if (ref.current) {
       const d = camera.position.length();
       ref.current.rotateSpeed = Math.max(0.8, Math.min(6, d * 0.7));
       ref.current.zoomSpeed = Math.max(0.15, Math.min(2.5, d * 0.12));
       ref.current.panSpeed = Math.max(0.15, Math.min(3, d * 0.25));
     }
+    invalidate(); // demand loop trigger
   });
 
   return (
@@ -494,7 +496,7 @@ export default function ViewerCanvas({
     <Canvas
       className="!absolute inset-0"
       gl={{ preserveDrawingBuffer: true, antialias: false, localClippingEnabled: true }}
-      frameloop="always"
+      frameloop="demand"
       style={{ background: '#0a0a0f' }}
     >
       <PerspectiveCamera makeDefault={!orthographic} position={[2, 1, 3]} fov={50} near={0.01} far={200} />
