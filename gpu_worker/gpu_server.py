@@ -624,6 +624,8 @@ def _upload_mesh(job_id: str, mesh_data: bytes):
                 time.sleep(5)
             else:
                 raise
+
+def _push_stream_batch(job_id: str, data: bytes, batch: int, frame_count: int):
     """Push a point cloud batch to the backend for live streaming to WebSocket clients."""
     try:
         req = urllib.request.Request(
