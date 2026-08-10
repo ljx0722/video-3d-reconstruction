@@ -1,4 +1,4 @@
-import { useState, useCallback, useRef, useEffect } from 'react';
+import { useState, useCallback, useRef, useEffect, Component } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import useSWR from 'swr';
 import * as THREE from 'three';
@@ -8,6 +8,32 @@ import ControlsPanel from './ControlsPanel';
 import CrossSectionView from './CrossSectionView';
 import { type BoxClip } from './Toolbar';
 import type { Job } from '../types';
+
+class ErrorBoundary extends Component<{ children: React.ReactNode }, { hasError: boolean; error: Error | null }> {
+  constructor(props: any) {
+    super(props);
+    this.state = { hasError: false, error: null };
+  }
+  static getDerivedStateFromError(error: Error) {
+    return { hasError: true, error };
+  }
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div className="absolute inset-0 flex items-center justify-center bg-black">
+          <div className="text-center">
+            <div className="text-4xl mb-3 text-red-400">!</div>
+            <p className="text-gray-400 text-sm">3D 视图加载失败</p>
+            <p className="text-gray-600 text-xs mt-1">{this.state.error?.message}</p>
+            <button onClick={() => this.setState({ hasError: false, error: null })}
+              className="mt-3 px-3 py-1 bg-gray-800 hover:bg-gray-700 text-gray-300 text-xs rounded">重试</button>
+          </div>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
 
 const POINT_SIZE = 0.004;
 const statusSteps = [
@@ -531,6 +557,7 @@ export default function ViewerPage() {
         <div className="absolute inset-0" ref={el=>{if(el){const c=el.querySelector('canvas');if(c&&c!==canvasEl)setCanvasEl(c as HTMLCanvasElement);}}} />
         {(job.status==='completed')?(
           <>
+            <ErrorBoundary>
             <ViewerCanvas jobId={job.id} pointSize={pointSize} opacity={opacity}
               onPointsReady={handlePointsReady} boxClip={boxClip}
               showAxes={showAxes} orthographic={orthographic} splatMode={splatMode}
@@ -545,6 +572,7 @@ export default function ViewerPage() {
               lassoEnabled={lassoEnabled}
               annotations={annotations}
             />
+            </ErrorBoundary>
             <KeyboardHint />
             <CrossSectionView positions={rawSectionData?.pos ?? null} colors={rawSectionData?.col ?? null} />
             <DisplayModeBar viewMode={viewMode} setViewMode={setViewMode} meshAvailable={meshAvailable} />

@@ -411,6 +411,52 @@ function KeyboardFly() {
   return null;
 }
 
+function ViewPresetHandler({ onUpdateClip, activeBox }: { onUpdateClip?: (c: BoxClip) => void; activeBox: BoxClip }) {
+  const { camera } = useThree();
+
+  useEffect(() => {
+    const h = (e: Event) => {
+      const { pos } = (e as CustomEvent).detail as { pos: [number,number,number] };
+      const dist = camera.position.length();
+      const dir = new THREE.Vector3(pos[0], pos[1], pos[2]).normalize();
+      camera.position.copy(dir.multiplyScalar(dist));
+      camera.lookAt(0, 0, 0);
+    };
+    window.addEventListener('view-preset', h);
+    return () => window.removeEventListener('view-preset', h);
+  }, [camera]);
+
+  useEffect(() => {
+    const h = (e: Event) => {
+      const { axis, sign } = (e as CustomEvent).detail as { axis: string; sign: number };
+      if (!onUpdateClip) return;
+      const c = { ...activeBox, enabled: true };
+      const i = axis === 'x' ? 0 : axis === 'y' ? 1 : 2;
+      const mid = (c.min[i] + c.max[i]) / 2;
+      const key = sign > 0 ? 'max' : 'min';
+      const arr = [...c[key]] as [number,number,number];
+      arr[i] = mid;
+      c[key] = arr;
+      onUpdateClip(c);
+    };
+    window.addEventListener('clip-preset', h);
+    return () => window.removeEventListener('clip-preset', h);
+  }, [onUpdateClip, activeBox]);
+
+  return null;
+}
+
+function LoadingFallback() {
+  return (
+    <Html center>
+      <div className="flex items-center gap-2 text-gray-400 text-xs select-none pointer-events-none">
+        <div className="w-4 h-4 border-2 border-blue-500 border-t-transparent rounded-full animate-spin" />
+        加载模型...
+      </div>
+    </Html>
+  );
+}
+
 function AxesHelper3D() {
   return (
     <group>
@@ -431,45 +477,8 @@ export default function ViewerCanvas({
   const [camPositions, setCamPositions] = useState<Float32Array | null>(null);
   const defaultBox: BoxClip = boxClip || { enabled: false, min: [-1, -0.5, -1], max: [1, 0.5, 1] };
   const activeBox = boxClip || defaultBox;
-  const camRef = useRef<THREE.Camera | null>(null);
-
-  // Capture camera ref
-  useFrame(({ camera }) => { camRef.current = camera; }, -1000);
 
   const handleCameras = useCallback((pos: Float32Array) => setCamPositions(pos), []);
-
-  // View preset handler
-  useEffect(() => {
-    const h = (e: Event) => {
-      const { pos } = (e as CustomEvent).detail as { pos: [number,number,number] };
-      const cam = camRef.current;
-      if (!cam) return;
-      const dist = cam.position.length();
-      const dir = new THREE.Vector3(pos[0], pos[1], pos[2]).normalize();
-      cam.position.copy(dir.multiplyScalar(dist));
-      cam.lookAt(0, 0, 0);
-    };
-    window.addEventListener('view-preset', h);
-    return () => window.removeEventListener('view-preset', h);
-  }, []);
-
-  // Clip half-preset handler
-  useEffect(() => {
-    const h = (e: Event) => {
-      const { axis, sign } = (e as CustomEvent).detail as { axis: string; sign: number };
-      if (!onUpdateClip) return;
-      const c = { ...activeBox, enabled: true };
-      const i = axis === 'x' ? 0 : axis === 'y' ? 1 : 2;
-      const mid = (((c.min[i]) + (c.max[i])) / 2);
-      const key = sign > 0 ? 'max' : 'min';
-      const arr = [...c[key]] as [number,number,number];
-      arr[i] = mid;
-      c[key] = arr;
-      onUpdateClip(c);
-    };
-    window.addEventListener('clip-preset', h);
-    return () => window.removeEventListener('clip-preset', h);
-  }, [onUpdateClip, activeBox]);
 
   const threeClipPlanes: THREE.Plane[] = [];
   if (activeBox.enabled) {
@@ -494,7 +503,7 @@ export default function ViewerCanvas({
       <ambientLight intensity={0.6} />
       <directionalLight position={[5, 5, 5]} intensity={0.4} />
 
-      <Suspense fallback={null}>
+      <Suspense fallback={<LoadingFallback />}>
         <ModelLoader
           url={(viewMode === 'mesh' || viewMode === 'wireframe') && meshAvailable ? getMeshUrl(jobId) : getResultUrl(jobId)}
           pointSize={pointSize}
@@ -517,6 +526,8 @@ export default function ViewerCanvas({
       {showAxes && <AxesHelper3D />}
 
       <ColoredViewcube />
+
+      <ViewPresetHandler onUpdateClip={onUpdateClip} activeBox={activeBox} />
 
       <AdaptiveControls target={orbitTarget} />
 
