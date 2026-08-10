@@ -533,7 +533,9 @@ def _build_mesh(vis_pred: dict, conf_pct: float, tmpdir: str) -> bytes | None:
     try:
         import numpy as np  # already imported by caller but be safe
 
-        xyz = vis_pred.get("world_points_from_depth") or vis_pred.get("world_points")
+        xyz = vis_pred.get("world_points_from_depth")
+        if xyz is None:
+            xyz = vis_pred.get("world_points")
         if xyz is None:
             logger.warning("No world_points for mesh")
             return None
