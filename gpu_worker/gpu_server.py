@@ -370,7 +370,7 @@ def poll_and_process():
                     f"{BACKEND_URL}/api/v1/gpu/video/{job_id}",
                     headers={"User-Agent": "gpu-worker/1.0"},
                 )
-                video_resp = urllib.request.urlopen(video_req, timeout=60)
+                video_resp = urllib.request.urlopen(video_req, timeout=300)
                 video_data = video_resp.read()
 
                 with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as f:
