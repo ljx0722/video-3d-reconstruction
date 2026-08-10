@@ -1,4 +1,4 @@
-import { Suspense, useState, useCallback, useRef, useEffect } from 'react';
+import { Suspense, useState, useCallback, useRef, useEffect, useMemo } from 'react';
 import { Canvas, useFrame, useThree } from '@react-three/fiber';
 import { TrackballControls, Grid, Html, Line, OrthographicCamera, PerspectiveCamera } from '@react-three/drei';
 import ColoredViewcube from './ColoredViewcube';
@@ -131,12 +131,19 @@ function AnnotationLabels({ annotations }: { annotations: { id: number; p1: THRE
 function ClipBox({ boxClip, onUpdate }: { boxClip: BoxClip; onUpdate?: (c: BoxClip) => void }) {
   if (!boxClip.enabled) return null;
   const { camera, size, gl } = useThree();
-  const dragRef = useRef<{ idx: number; sign: 1 | -1; initVal: number; initMouse: number } | null>(null);
-  const handleRefs = useRef<THREE.Mesh[]>([]);
+  const boxClipRef = useRef(boxClip);
+  boxClipRef.current = boxClip;
+  const onUpdateRef = useRef(onUpdate);
+  onUpdateRef.current = onUpdate;
+  const dragRef = useRef<{ idx: number; sign: 1 | -1 } | null>(null);
+  const hitRefs = useRef<THREE.Mesh[]>([]);
+  const visRefs = useRef<THREE.Mesh[]>([]);
   const [mx, my, mz] = boxClip.min; const [Mx, My, Mz] = boxClip.max;
   const ctr: [number, number, number] = [(mx + Mx) / 2, (my + My) / 2, (mz + Mz) / 2];
   const sz: [number, number, number] = [Mx - mx, My - my, Mz - mz];
-  const hScale = Math.max(sz[0], sz[1], sz[2], 0.1) * 0.08;
+  const diag = Math.max(0.1, Mx - mx, My - my, Mz - mz);
+  const hScale = diag * 0.06;
+  const hitScale = diag * 0.12;
 
   const handles = [
     { idx: 0, sign:  1 as const, pos: [Mx, ctr[1], ctr[2]] as [number, number, number], col: '#ef4444' },
@@ -147,53 +154,54 @@ function ClipBox({ boxClip, onUpdate }: { boxClip: BoxClip; onUpdate?: (c: BoxCl
     { idx: 2, sign: -1 as const, pos: [ctr[0], ctr[1], mz] as [number, number, number], col: '#3b82f6' },
   ];
 
+  // One-time effect for pointer events (stable refs, no boxClip dep)
   useEffect(() => {
     const el = gl.domElement;
     const rc = new THREE.Raycaster();
+    // Increase threshold so rays that pass near (not through) the hitbox still count
+    rc.params.Points = undefined as any;
     const mouse = new THREE.Vector2();
 
     const onDown = (e: PointerEvent) => {
       mouse.x = (e.offsetX / size.width) * 2 - 1;
       mouse.y = -(e.offsetY / size.height) * 2 + 1;
       rc.setFromCamera(mouse, camera);
-      const targets = handleRefs.current.filter(Boolean);
+      // Only check the invisible large hitboxes (much easier to grab)
+      const targets = hitRefs.current.filter(Boolean);
+      if (targets.length === 0) return;
       const hits = rc.intersectObjects(targets, false);
       if (hits.length > 0) {
         const i = targets.indexOf(hits[0].object as THREE.Mesh);
-        if (i >= 0) {
-          const h = handles[i];
-          const key = h.sign > 0 ? 'max' : 'min';
-          dragRef.current = {
-            idx: h.idx, sign: h.sign,
-            initVal: boxClip[key][h.idx],
-            initMouse: h.idx === 0 ? mouse.x : h.idx === 1 ? -mouse.y : mouse.y
-          };
+        if (i >= 0 && i < handles.length) {
           e.stopPropagation();
+          e.preventDefault();
+          (e.target as HTMLElement).setPointerCapture?.(e.pointerId);
+          dragRef.current = { idx: handles[i].idx, sign: handles[i].sign };
         }
       }
     };
     const onMove = (e: PointerEvent) => {
       if (!dragRef.current) return;
       const dr = dragRef.current;
+      const box = boxClipRef.current;
+      const upd = onUpdateRef.current;
+      if (!upd) return;
       mouse.x = (e.offsetX / size.width) * 2 - 1;
       mouse.y = -(e.offsetY / size.height) * 2 + 1;
-      // Ray through handle's current plane (plane at handle world coords, not origin)
       const axisVec = new THREE.Vector3(); axisVec.setComponent(dr.idx, 1);
       rc.setFromCamera(mouse, camera);
-      const pt = new THREE.Vector3();
-      // Project onto a plane at the handle's current world coordinate
-      const currentVal = boxClip[dr.sign > 0 ? 'max' : 'min'][dr.idx];
+      const currentVal = box[dr.sign > 0 ? 'max' : 'min'][dr.idx];
       const perpPlane = new THREE.Plane(axisVec, -currentVal);
-      if (!rc.ray.intersectPlane(perpPlane, pt) || !onUpdate) return;
+      const pt = new THREE.Vector3();
+      if (!rc.ray.intersectPlane(perpPlane, pt)) return;
       const val = pt.getComponent(dr.idx);
       const key = dr.sign > 0 ? 'max' : 'min';
       const other = dr.sign > 0 ? 'min' : 'max';
-      const arr = [...boxClip[key]] as [number, number, number];
+      const arr = [...box[key]] as [number, number, number];
       arr[dr.idx] = Number(val.toFixed(4));
-      // Clamp
-      if (dr.sign > 0) arr[dr.idx] = Math.max(arr[dr.idx], boxClip[other][dr.idx] + 0.0005);
-      else arr[dr.idx] = Math.min(arr[dr.idx], boxClip[other][dr.idx] - 0.0005);
-      onUpdate({ ...boxClip, [key]: arr });
+      if (dr.sign > 0) arr[dr.idx] = Math.max(arr[dr.idx], box[other][dr.idx] + 0.0005);
+      else arr[dr.idx] = Math.min(arr[dr.idx], box[other][dr.idx] - 0.0005);
+      upd({ ...box, [key]: arr });
     };
     const onUp = () => { dragRef.current = null; };
 
@@ -205,10 +213,13 @@ function ClipBox({ boxClip, onUpdate }: { boxClip: BoxClip; onUpdate?: (c: BoxCl
       window.removeEventListener('pointermove', onMove);
       window.removeEventListener('pointerup', onUp);
     };
-  }, [camera, size, boxClip, onUpdate, gl, handles]);
+  }, [camera, size, gl]); // no boxClip dep — uses refs
 
-  const geom = new THREE.BoxGeometry(sz[0], sz[1], sz[2]);
-  geom.translate(ctr[0], ctr[1], ctr[2]);
+  const geom = useMemo(() => {
+    const g = new THREE.BoxGeometry(sz[0], sz[1], sz[2]);
+    g.translate(ctr[0], ctr[1], ctr[2]);
+    return g;
+  }, [sz, ctr]);
 
   return (
     <group>
@@ -217,10 +228,18 @@ function ClipBox({ boxClip, onUpdate }: { boxClip: BoxClip; onUpdate?: (c: BoxCl
         <lineBasicMaterial color="#22c55e" transparent opacity={0.7} depthTest={true} />
       </lineSegments>
       {handles.map((h, i) => (
-        <mesh key={i} ref={el => { if (el) handleRefs.current[i] = el; }} position={h.pos}>
-          <sphereGeometry args={[hScale * 0.9, 16, 16]} />
-          <meshStandardMaterial color={h.col} emissive={h.col} emissiveIntensity={0.4} roughness={0.3} />
-        </mesh>
+        <group key={i}>
+          {/* Large invisible hitbox — actual click target */}
+          <mesh ref={el => { if (el) hitRefs.current[i] = el; }} position={h.pos} visible={false}>
+            <sphereGeometry args={[hitScale, 8, 8]} />
+            <meshBasicMaterial visible={false} />
+          </mesh>
+          {/* Visual handle */}
+          <mesh ref={el => { if (el) visRefs.current[i] = el; }} position={h.pos}>
+            <sphereGeometry args={[hScale, 12, 12]} />
+            <meshStandardMaterial color={h.col} emissive={h.col} emissiveIntensity={0.5} roughness={0.2} />
+          </mesh>
+        </group>
       ))}
     </group>
   );
