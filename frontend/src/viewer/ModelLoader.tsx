@@ -38,7 +38,6 @@ export default function ModelLoader({ url, pointSize, opacity = 1, onPointsReady
 
     scene.traverse((child: any) => {
       if (child.isMesh) {
-        // Found a mesh geometry (triangles/faces)
         const geo = child.geometry as THREE.BufferGeometry | undefined;
         if (geo && geo.index) {
           meshList.push(child.clone());
@@ -55,7 +54,11 @@ export default function ModelLoader({ url, pointSize, opacity = 1, onPointsReady
         for (let i=0; i<pos.count; i++) { cx+=pos.getX(i); cy+=pos.getY(i); cz+=pos.getZ(i); }
         camPos.push(cx/pos.count, cy/pos.count, cz/pos.count);
       } else {
-        for (let i=0; i<pos.count; i++) {
+        // Auto-downsample to max 2M points for smooth rendering
+        const total = pos.count;
+        const budget = 2000000;
+        const step = total > budget ? Math.ceil(total / budget) : 1;
+        for (let i = 0; i < total; i += step) {
           pcPos.push(pos.getX(i), pos.getY(i), pos.getZ(i));
           pcCol.push(col ? col.getX(i) : 1, col ? col.getY(i) : 1, col ? col.getZ(i) : 1);
         }
@@ -72,9 +75,9 @@ export default function ModelLoader({ url, pointSize, opacity = 1, onPointsReady
       const isGaussian = splatMode || viewMode === 'gaussian';
       const mat = new THREE.PointsMaterial({
         size: isGaussian ? pointSize * 4 : pointSize, vertexColors: true, sizeAttenuation: true,
-        depthWrite: isGaussian ? false : true,
+        depthWrite: !isGaussian,
         blending: isGaussian ? THREE.AdditiveBlending : THREE.NormalBlending,
-        transparent: true, opacity, clippingPlanes: clipPlanes || [], clipShadows: true,
+        transparent: true, opacity, clippingPlanes: clipPlanes || [], clipShadows: false,
         map: isGaussian ? splatTex : null, depthTest: true,
       });
       pts = new THREE.Points(geo, mat);

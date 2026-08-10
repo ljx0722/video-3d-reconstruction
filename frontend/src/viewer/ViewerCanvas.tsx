@@ -427,7 +427,7 @@ export default function ViewerCanvas({
   return (
     <Canvas
       className="!absolute inset-0"
-      gl={{ preserveDrawingBuffer: true, antialias: true, localClippingEnabled: true }}
+      gl={{ preserveDrawingBuffer: true, antialias: false, localClippingEnabled: true }}
       frameloop="always"
       style={{ background: '#0a0a0f' }}
     >
