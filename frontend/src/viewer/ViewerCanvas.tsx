@@ -23,6 +23,8 @@ interface Props {
   orbitTarget?: [number, number, number];
   viewMode?: 'points' | 'gaussian' | 'mesh' | 'wireframe';
   meshAvailable?: boolean;
+  orientMarkers?: THREE.Vector3[] | null;
+  orientPlane?: { normal: THREE.Vector3; center: THREE.Vector3 } | null;
 }
 
 function BoxWireframe({ boxClip }: { boxClip: BoxClip }) {
@@ -115,6 +117,43 @@ function AdaptiveControls({ target }: { target: [number, number, number] }) {
   );
 }
 
+function OrientMarkers({ markers, plane }: { markers: THREE.Vector3[] | null; plane: { normal: THREE.Vector3; center: THREE.Vector3 } | null }) {
+  if (!markers || markers.length === 0) return null;
+  const colors = ['#3B82F6', '#F59E0B', '#EF4444'];
+  // Compute plane size from bounding box of markers
+  let maxDist = 1;
+  if (markers.length >= 3) {
+    const c = new THREE.Vector3();
+    markers.forEach(p => c.add(p));
+    c.multiplyScalar(1/markers.length);
+    markers.forEach(p => maxDist = Math.max(maxDist, c.distanceTo(p)));
+  }
+  const planeSize = maxDist * 1.5;
+  return (
+    <group>
+      {markers.map((pt, i) => (
+        <group key={i}>
+          <mesh position={pt.toArray()}>
+            <sphereGeometry args={[0.04, 16, 16]} />
+            <meshBasicMaterial color={colors[i]} />
+          </mesh>
+          <Html position={[pt.x, pt.y + 0.1, pt.z]} center>
+            <div className="bg-gray-900/90 text-white text-[10px] px-1.5 py-0.5 rounded font-mono border border-gray-600 select-none">
+              {i+1}
+            </div>
+          </Html>
+        </group>
+      ))}
+      {plane && (
+        <mesh position={plane.center.toArray()} quaternion={new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0,0,1), plane.normal)}>
+          <planeGeometry args={[planeSize, planeSize]} />
+          <meshBasicMaterial color="#22c55e" side={THREE.DoubleSide} transparent opacity={0.25} depthTest={true} />
+        </mesh>
+      )}
+    </group>
+  );
+}
+
 function AxesHelper3D() {
   return (
     <group>
@@ -129,6 +168,7 @@ export default function ViewerCanvas({
   jobId, pointSize, opacity = 1, onPointsReady, onMeshReady,
   boxClip, showAxes, orthographic, splatMode, showGrid, showTrajectory = true,
   edlStrength = 0.4, orbitTarget = [0, 0, 0], viewMode = 'points', meshAvailable = false,
+  orientMarkers = null, orientPlane = null,
 }: Props) {
   const [camPositions, setCamPositions] = useState<Float32Array | null>(null);
   const defaultBox: BoxClip = boxClip || { enabled: false, min: [-1, -0.5, -1], max: [1, 0.5, 1] };
@@ -186,6 +226,8 @@ export default function ViewerCanvas({
       </GizmoHelper>
 
       <AdaptiveControls target={orbitTarget} />
+
+      <OrientMarkers markers={orientMarkers} plane={orientPlane} />
 
       <EDLEffect edlStrength={edlStrength} />
     </Canvas>

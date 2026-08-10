@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import * as THREE from 'three';
 import type { BoxClip } from './Toolbar';
 
 type PanelId = null | 'view' | 'color' | 'filter' | 'clip' | 'measure' | 'export';
@@ -24,6 +25,11 @@ interface CtrlProps {
   showGrid: boolean; setShowGrid: (v: boolean) => void;
   onAutoClip: () => void;
   edlStrength: number; setEdlStrength: (v: number) => void;
+  orientMode?: boolean; setOrientMode?: (v: boolean) => void;
+  orientMarkers?: THREE.Vector3[] | null;
+  orientPlane?: { normal: THREE.Vector3; center: THREE.Vector3 } | null;
+  onApplyOrient?: () => void;
+  onCancelOrient?: () => void;
 }
 
 const Btn = ({ label, active, icon, onClick }: { label: string; active: boolean; icon: string; onClick: () => void }) => (
@@ -94,6 +100,23 @@ export default function ControlsPanel(p: CtrlProps) {
           <div className="w-9 text-center text-yellow-400 text-[9px] -mt-1">
             {(p.distance * 100).toFixed(1)}cm
           </div>
+        )}
+
+        {/* Orient (3-point ground plane) */}
+        <Btn icon="⟴" label="方向校正" active={!!p.orientMode || !!p.orientPlane}
+          onClick={() => {
+            if (p.orientPlane) return; // has pending result, don't re-enter
+            if (p.onCancelOrient) p.onCancelOrient();
+            else if (p.setOrientMode) p.setOrientMode(!p.orientMode);
+          }} />
+        {(p.orientMode || p.orientPlane) && (
+          <OrientPanel
+            orientMode={!!p.orientMode}
+            markerCount={p.orientMarkers?.length ?? 0}
+            orientPlane={p.orientPlane ?? null}
+            onApply={p.onApplyOrient ?? (() => {})}
+            onCancel={p.onCancelOrient ?? (() => {})}
+          />
         )}
 
         {/* Export */}
@@ -274,6 +297,51 @@ function ExportPanel({ onExport }: { onExport: (fmt: string) => void }) {
           </button>
         ))}
       </div>
+    </Card>
+  );
+}
+
+/* ── Orient Panel ──────────────────────────────────── */
+function OrientPanel({ orientMode, markerCount, orientPlane, onApply, onCancel }: {
+  orientMode: boolean; markerCount: number; orientPlane: { normal: THREE.Vector3; center: THREE.Vector3 } | null;
+  onApply: () => void; onCancel: () => void;
+}) {
+  return (
+    <Card title="方向校正">
+      {orientMode ? (
+        <div className="space-y-2">
+          <p className="text-gray-400 text-[10px]">在地面区域点选 <strong>3 个点</strong>，系统自动拟合地平面并校正方向。</p>
+          <div className="flex gap-1">
+            {[0,1,2].map(i => (
+              <div key={i} className={`flex-1 h-6 rounded flex items-center justify-center text-[10px] font-mono
+                ${i < markerCount ? 'bg-blue-500/30 text-blue-300 border border-blue-400/50' : 'bg-gray-800 text-gray-600 border border-gray-700'}`}>
+                {i < markerCount ? `P${i+1}` : '○'}
+              </div>
+            ))}
+          </div>
+          <button onClick={onCancel}
+            className="w-full bg-gray-800/50 hover:bg-gray-700/50 text-gray-400 rounded px-2 py-1 text-[10px] border border-gray-700/50">
+            取消
+          </button>
+        </div>
+      ) : orientPlane ? (
+        <div className="space-y-2">
+          <p className="text-green-400/80 text-[10px]">✓ 地平面已拟合</p>
+          <div className="text-gray-500 text-[9px] space-y-0.5">
+            <p>法线: ({orientPlane.normal.x.toFixed(2)}, {orientPlane.normal.y.toFixed(2)}, {orientPlane.normal.z.toFixed(2)})</p>
+          </div>
+          <div className="flex gap-1">
+            <button onClick={onApply}
+              className="flex-1 bg-blue-500/20 hover:bg-blue-500/30 text-blue-400 rounded px-2 py-1 text-[10px] border border-blue-500/20">
+              应用旋转
+            </button>
+            <button onClick={onCancel}
+              className="flex-1 bg-gray-800/50 hover:bg-gray-700/50 text-gray-400 rounded px-2 py-1 text-[10px] border border-gray-700/50">
+              放弃
+            </button>
+          </div>
+        </div>
+      ) : null}
     </Card>
   );
 }

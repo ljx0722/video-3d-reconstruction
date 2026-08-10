@@ -47,6 +47,12 @@ export default function ViewerPage() {
   const measurePtsRef = useRef<THREE.Vector3[]>([]);
   const [distance, setDistance] = useState<number | null>(null);
 
+  // Orient (3-point ground plane)
+  const [orientMode, setOrientMode] = useState(false);
+  const orientPtsRef = useRef<THREE.Vector3[]>([]);
+  const [orientMarkers, setOrientMarkers] = useState<THREE.Vector3[] | null>(null);
+  const [orientPlane, setOrientPlane] = useState<{ normal: THREE.Vector3; center: THREE.Vector3 } | null>(null);
+
   useEffect(() => {
     if (!jobId || job?.status !== 'completed') return;
     fetch(`/files/${jobId}/result_mesh.glb`, { method: 'HEAD' })
@@ -85,6 +91,40 @@ export default function ViewerPage() {
     return () => canvasEl.removeEventListener('click', h);
   }, [measureMode, canvasEl]);
 
+  // Orient mode click — collect 3 ground plane points
+  useEffect(() => {
+    if (!orientMode || !canvasEl || !pointsRef.current) return;
+    const h = (e: MouseEvent) => {
+      if (e.button !== 0) return;
+      const r = canvasEl.getBoundingClientRect();
+      const m = new THREE.Vector2(((e.clientX-r.left)/r.width)*2-1, -((e.clientY-r.top)/r.height)*2+1);
+      const rc = new THREE.Raycaster();
+      rc.params.Points!.threshold = 0.05;
+      rc.setFromCamera(m, new THREE.PerspectiveCamera(50, r.width/r.height, 0.1, 100));
+      const hits = rc.intersectObject(pointsRef.current!);
+      if (hits.length > 0) {
+        const pt = hits[0].point.clone();
+        const arr = [...orientPtsRef.current, pt];
+        orientPtsRef.current = arr;
+        setOrientMarkers(arr.slice());
+        if (arr.length >= 3) {
+          // Fit plane, compute rotation
+          const c = new THREE.Vector3().addVectors(arr[0], arr[1]).add(arr[2]).multiplyScalar(1/3);
+          // vectors in plane: v1 = p1-c, v2 = p2-c
+          const v1 = new THREE.Vector3().subVectors(arr[0], c);
+          const v2 = new THREE.Vector3().subVectors(arr[2], c);
+          const n = new THREE.Vector3().crossVectors(v1, v2).normalize();
+          // Ensure normal points roughly upward (toward Y+ if Y dominates, else keep)
+          if (n.y < 0) n.negate();
+          setOrientPlane({ normal: n.clone(), center: c.clone() });
+          setOrientMode(false);
+        }
+      }
+    };
+    canvasEl.addEventListener('click', h);
+    return () => canvasEl.removeEventListener('click', h);
+  }, [orientMode, canvasEl]);
+
   const updateGeometry = useCallback((newPos: Float32Array, newCol: Float32Array) => {
     if (!pointsRef.current) return;
     const geo = new THREE.BufferGeometry();
@@ -92,6 +132,41 @@ export default function ViewerPage() {
     geo.setAttribute('color', new THREE.BufferAttribute(newCol, 3));
     pointsRef.current.geometry = geo;
     setPointCount(newPos.length / 3);
+  }, []);
+
+  const doApplyOrient = useCallback(() => {
+    if (!orientPlane || !originalData.current) return;
+    const n = orientPlane.normal;
+    const up = new THREE.Vector3(0, 1, 0);
+    const q = new THREE.Quaternion().setFromUnitVectors(n, up);
+    const pos = originalData.current.pos;
+    const np = new Float32Array(pos.length);
+    const v = new THREE.Vector3();
+    for (let i = 0; i < pos.length; i += 3) {
+      v.set(pos[i], pos[i+1], pos[i+2]).applyQuaternion(q);
+      np[i] = v.x; np[i+1] = v.y; np[i+2] = v.z;
+    }
+    const col = originalData.current.col;
+    updateGeometry(np, col);
+    originalData.current = { pos: np, col: col };
+    setRawSectionData({ pos: np, col: col });
+    let mx=Infinity,Mx=-Infinity,my=Infinity,My=-Infinity,mz=Infinity,Mz=-Infinity;
+    for (let i=0;i<np.length;i+=3){
+      mx=Math.min(mx,np[i]);Mx=Math.max(Mx,np[i]);
+      my=Math.min(my,np[i+1]);My=Math.max(My,np[i+1]);
+      mz=Math.min(mz,np[i+2]);Mz=Math.max(Mz,np[i+2]);
+    }
+    setOrbitTarget([(mx+Mx)/2,(my+My)/2,(mz+Mz)/2]);
+    setOrientPlane(null);
+    setOrientMarkers(null);
+    orientPtsRef.current = [];
+  }, [orientPlane, updateGeometry]);
+
+  const doCancelOrient = useCallback(() => {
+    setOrientMode(false);
+    setOrientPlane(null);
+    setOrientMarkers(null);
+    orientPtsRef.current = [];
   }, []);
 
   const handlePointsReady = useCallback((mesh: THREE.Points) => {
@@ -370,6 +445,8 @@ export default function ViewerPage() {
               orbitTarget={orbitTarget}
               viewMode={viewMode as any}
               meshAvailable={meshAvailable}
+              orientMarkers={orientMarkers}
+              orientPlane={orientPlane}
             />
             <CrossSectionView positions={rawSectionData?.pos ?? null} colors={rawSectionData?.col ?? null} />
             <DisplayModeBar viewMode={viewMode} setViewMode={setViewMode} meshAvailable={meshAvailable} />
@@ -393,6 +470,11 @@ export default function ViewerPage() {
               onAutoClip={doAutoClip}
               edlStrength={edlStrength} setEdlStrength={setEdlStrength}
               showTrajectory={showTrajectory} setShowTrajectory={setShowTrajectory}
+              orientMode={orientMode} setOrientMode={setOrientMode}
+              orientMarkers={orientMarkers}
+              orientPlane={orientPlane}
+              onApplyOrient={doApplyOrient}
+              onCancelOrient={doCancelOrient}
             />
           </>
         ):job.status==='failed'?(
