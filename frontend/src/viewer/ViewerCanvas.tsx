@@ -1,6 +1,6 @@
 import { Suspense, useState, useCallback, useRef, useEffect } from 'react';
 import { Canvas, useFrame, useThree } from '@react-three/fiber';
-import { TrackballControls, GizmoHelper, GizmoViewport, Grid, Html, Line, OrthographicCamera, PerspectiveCamera } from '@react-three/drei';
+import { TrackballControls, GizmoHelper, GizmoViewcube, Grid, Html, Line, OrthographicCamera, PerspectiveCamera } from '@react-three/drei';
 import * as THREE from 'three';
 import { getResultUrl, getMeshUrl } from '../api/client';
 import ModelLoader from './ModelLoader';
@@ -460,7 +460,7 @@ export default function ViewerCanvas({
       {showAxes && <AxesHelper3D />}
 
       <GizmoHelper alignment="top-right" margin={[80, 80]} renderPriority={1}>
-        <GizmoViewport axisColors={['#ef4444', '#22c55e', '#3b82f6']} labelColor="#9ca3af" />
+        <GizmoViewcube faces={['右', '左', '上', '下', '前', '后']} />
       </GizmoHelper>
 
       <AdaptiveControls target={orbitTarget} />
