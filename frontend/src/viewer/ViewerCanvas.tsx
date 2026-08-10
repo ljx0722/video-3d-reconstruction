@@ -4,6 +4,7 @@ import { TrackballControls, GizmoHelper, GizmoViewport, Grid, Html, Line, Orthog
 import * as THREE from 'three';
 import { getResultUrl, getMeshUrl } from '../api/client';
 import ModelLoader from './ModelLoader';
+import GaussianRenderer from './GaussianRenderer';
 import EDLEffect from './EDLEffect';
 import type { BoxClip } from './Toolbar';
 
@@ -28,6 +29,7 @@ interface Props {
   onUpdateClip?: (clip: BoxClip) => void;
   lassoEnabled?: boolean;
   annotations?: { id: number; p1: THREE.Vector3; p2: THREE.Vector3; label: string }[];
+  gaussianData?: { pos: Float32Array; col: Float32Array } | null;
 }
 
 function LassoOverlay({ enabled }: { enabled: boolean }) {
@@ -406,7 +408,7 @@ export default function ViewerCanvas({
   boxClip, showAxes, orthographic, splatMode, showGrid, showTrajectory = true,
   edlStrength = 0.4, orbitTarget = [0, 0, 0], viewMode = 'points', meshAvailable = false,
   orientMarkers = null, orientPlane = null, onUpdateClip,
-  lassoEnabled = false, annotations = [],
+  lassoEnabled = false, annotations = [], gaussianData = null,
 }: Props) {
   const [camPositions, setCamPositions] = useState<Float32Array | null>(null);
   const defaultBox: BoxClip = boxClip || { enabled: false, min: [-1, -0.5, -1], max: [1, 0.5, 1] };
@@ -438,6 +440,9 @@ export default function ViewerCanvas({
       <directionalLight position={[5, 5, 5]} intensity={0.4} />
 
       <Suspense fallback={null}>
+        {viewMode === 'gaussian' && gaussianData ? (
+          <GaussianRenderer positions={gaussianData.pos} colors={gaussianData.col} pointSize={pointSize} />
+        ) : (
         <ModelLoader
           url={(viewMode === 'mesh' || viewMode === 'wireframe') && meshAvailable ? getMeshUrl(jobId) : getResultUrl(jobId)}
           pointSize={pointSize}
@@ -449,6 +454,7 @@ export default function ViewerCanvas({
           splatMode={splatMode}
           viewMode={viewMode}
         />
+        )}
       </Suspense>
 
       {camPositions && showTrajectory && <CameraTrail positions={camPositions} />}
