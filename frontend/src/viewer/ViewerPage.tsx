@@ -58,6 +58,19 @@ export default function ViewerPage() {
   const lassoSelRef = useRef<Set<number>>(new Set());
   const [selectedCount, setSelectedCount] = useState(0);
 
+  // History (undo/redo)
+  const historyRef = useRef<{ pos: Float32Array; col: Float32Array }[]>([]);
+  const historyIdx = useRef(-1);
+  const pushHistory = useCallback(() => {
+    const o = originalData.current;
+    if (!o) return;
+    const h = historyRef.current;
+    h.length = historyIdx.current + 1;
+    h.push({ pos: o.pos.slice(), col: o.col.slice() });
+    if (h.length > 30) h.shift();
+    else historyIdx.current = h.length - 1;
+  }, []);
+
   // Annotations
   const [annotations, setAnnotations] = useState<{ id: number; p1: THREE.Vector3; p2: THREE.Vector3; label: string }[]>([]);
   const nextAnnoId = useRef(1);
@@ -149,7 +162,7 @@ export default function ViewerPage() {
     return () => canvasEl.removeEventListener('click', h);
   }, [orientMode, canvasEl]);
 
-  const updateGeometry = useCallback((newPos: Float32Array, newCol: Float32Array) => {
+  const _updateGeometry = useCallback((newPos: Float32Array, newCol: Float32Array) => {
     if (!pointsRef.current) return;
     const geo = new THREE.BufferGeometry();
     geo.setAttribute('position', new THREE.BufferAttribute(newPos, 3));
@@ -157,6 +170,47 @@ export default function ViewerPage() {
     pointsRef.current.geometry = geo;
     setPointCount(newPos.length / 3);
   }, []);
+
+  const updateGeometry = useCallback((newPos: Float32Array, newCol: Float32Array) => {
+    pushHistory();
+    _updateGeometry(newPos, newCol);
+  }, [pushHistory, _updateGeometry]);
+
+  // Undo/Redo callbacks
+  const undo = useCallback(() => {
+    const h = historyRef.current;
+    if (historyIdx.current <= 0 && h.length < 2) return;
+    if (historyIdx.current > 0) {
+      historyIdx.current--;
+      const s = h[historyIdx.current];
+      _updateGeometry(s.pos, s.col);
+      originalData.current = s;
+      setRawSectionData({ pos: s.pos, col: s.col });
+      setOriginalCount(s.pos.length / 3);
+    }
+  }, [_updateGeometry]);
+
+  const redo = useCallback(() => {
+    const h = historyRef.current;
+    if (historyIdx.current >= h.length - 1) return;
+    historyIdx.current++;
+    const s = h[historyIdx.current];
+    _updateGeometry(s.pos, s.col);
+    originalData.current = s;
+    setRawSectionData({ pos: s.pos, col: s.col });
+    setOriginalCount(s.pos.length / 3);
+  }, [_updateGeometry]);
+
+  // Ctrl+Z / Ctrl+Y undo-redo
+  useEffect(() => {
+    const h = (e: KeyboardEvent) => {
+      if (!e.ctrlKey && !e.metaKey) return;
+      if (e.key === 'z' || e.key === 'Z') { e.preventDefault(); undo(); }
+      if (e.key === 'y' || e.key === 'Y' || (e.key === 'Z' && e.shiftKey)) { e.preventDefault(); redo(); }
+    };
+    window.addEventListener('keydown', h);
+    return () => window.removeEventListener('keydown', h);
+  }, [undo, redo]);
 
   // Delete key — remove selected lasso points
   useEffect(() => {
