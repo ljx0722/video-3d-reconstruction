@@ -529,7 +529,7 @@ export default function ViewerCanvas({
 
       {showAxes && <AxesHelper3D />}
 
-      <ColoredViewcube size={0.65} />
+      <ColoredViewcube size={0.85} />
 
       <ViewPresetHandler onUpdateClip={onUpdateClip} activeBox={activeBox} />
 

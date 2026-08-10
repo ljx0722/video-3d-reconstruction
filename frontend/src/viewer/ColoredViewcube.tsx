@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react';
+import { useRef, useState, useEffect } from 'react';
 import * as THREE from 'three';
 import { useFrame, useThree } from '@react-three/fiber';
 
@@ -62,7 +62,6 @@ export default function ColoredViewcube({ size = 1.0 }: { size?: number }) {
   const { camera, gl } = useThree();
   const groupRef = useRef<THREE.Group>(null);
   const [hovered, setHovered] = useState<number | null>(null);
-  // Lazy init — only runs once inside R3F context when WebGL is ready
   const [matSets] = useState(() => buildMaterials());
 
   useFrame(() => {
@@ -70,14 +69,24 @@ export default function ColoredViewcube({ size = 1.0 }: { size?: number }) {
     const el = gl.domElement;
     if (el.clientWidth === 0) return;
     const w = el.clientWidth, h = el.clientHeight;
+    // Fixed screen position (top-right, 80px from edges)
     const sx = (w - 80) / w * 2 - 1;
     const sy = -(80 / h) * 2 + 1;
     const v = new THREE.Vector3(sx, sy, 0.5);
     v.unproject(camera);
     const dir = v.clone().sub(camera.position).normalize();
-    groupRef.current.position.copy(camera.position).add(dir.multiplyScalar(2.0));
+    // Place cube very close to camera (< 1.5 units) so it never hits far plane
+    groupRef.current.position.copy(camera.position).add(dir.multiplyScalar(1.2));
     groupRef.current.quaternion.copy(camera.quaternion).invert();
   });
+
+  // Set render order on mount to draw after everything else
+  useEffect(() => {
+    if (!groupRef.current) return;
+    groupRef.current.traverse((c: any) => {
+      if (c.renderOrder !== undefined) c.renderOrder = 999;
+    });
+  }, []);
 
   const onClick = (i: number) => (e: any) => {
     e.stopPropagation();
