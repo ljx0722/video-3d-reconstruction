@@ -85,8 +85,6 @@ export default function ControlsPanel(p: CtrlProps) {
           {(p.orientMode || p.orientPlane) ? '⟴ 定向中' : '⟴ 定向'}
         </button>
         )}
-        {/* Quick view presets */}
-        <ViewPresets />
       </div>
 
       {/* Right-side circular controls */}
@@ -376,24 +374,6 @@ function OrientPanel({ orientMode, markerCount, orientPlane, onApply, onCancel }
         </div>
       ) : null}
     </Card>
-  );
-}
-
-/* ── View presets ──────────────────────────────── */
-function ViewPresets() {
-  return (
-    <div className="flex items-center gap-0.5 bg-gray-900/80 backdrop-blur rounded-lg px-1 py-0.5 border border-gray-800">
-      {[
-        ['前', 0,0,1], ['后', 0,0,-1], ['左', -1,0,0], ['右', 1,0,0], ['上', 0,1,0], ['下', 0,-1,0],
-      ].map(([label, x, y, z]) => (
-        <button key={String(label)} onClick={() => {
-          const d = 5;
-          window.dispatchEvent(new CustomEvent('view-preset', { detail: { pos: [(x as number)*d, (y as number)*d, (z as number)*d] } }));
-        }}
-          className="text-[9px] text-gray-500 hover:text-gray-200 hover:bg-gray-700/50 rounded px-1"
-          title={`视图: ${label}`}>{String(label)}</button>
-      ))}
-    </div>
   );
 }
 
