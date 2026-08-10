@@ -412,8 +412,45 @@ export default function ViewerCanvas({
   const [camPositions, setCamPositions] = useState<Float32Array | null>(null);
   const defaultBox: BoxClip = boxClip || { enabled: false, min: [-1, -0.5, -1], max: [1, 0.5, 1] };
   const activeBox = boxClip || defaultBox;
+  const camRef = useRef<THREE.Camera | null>(null);
+
+  // Capture camera ref
+  useFrame(({ camera }) => { camRef.current = camera; }, -1000);
 
   const handleCameras = useCallback((pos: Float32Array) => setCamPositions(pos), []);
+
+  // View preset handler
+  useEffect(() => {
+    const h = (e: Event) => {
+      const { pos } = (e as CustomEvent).detail as { pos: [number,number,number] };
+      const cam = camRef.current;
+      if (!cam) return;
+      const dist = cam.position.length();
+      const dir = new THREE.Vector3(pos[0], pos[1], pos[2]).normalize();
+      cam.position.copy(dir.multiplyScalar(dist));
+      cam.lookAt(0, 0, 0);
+    };
+    window.addEventListener('view-preset', h);
+    return () => window.removeEventListener('view-preset', h);
+  }, []);
+
+  // Clip half-preset handler
+  useEffect(() => {
+    const h = (e: Event) => {
+      const { axis, sign } = (e as CustomEvent).detail as { axis: string; sign: number };
+      if (!onUpdateClip) return;
+      const c = { ...activeBox, enabled: true };
+      const i = axis === 'x' ? 0 : axis === 'y' ? 1 : 2;
+      const mid = (((c.min[i]) + (c.max[i])) / 2);
+      const key = sign > 0 ? 'max' : 'min';
+      const arr = [...c[key]] as [number,number,number];
+      arr[i] = mid;
+      c[key] = arr;
+      onUpdateClip(c);
+    };
+    window.addEventListener('clip-preset', h);
+    return () => window.removeEventListener('clip-preset', h);
+  }, [onUpdateClip, activeBox]);
 
   const threeClipPlanes: THREE.Plane[] = [];
   if (activeBox.enabled) {

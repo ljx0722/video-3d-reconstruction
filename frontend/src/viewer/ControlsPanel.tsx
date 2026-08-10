@@ -85,6 +85,8 @@ export default function ControlsPanel(p: CtrlProps) {
           {(p.orientMode || p.orientPlane) ? '⟴ 定向中' : '⟴ 定向'}
         </button>
         )}
+        {/* Quick view presets */}
+        <ViewPresets />
       </div>
 
       {/* Right-side circular controls */}
@@ -268,8 +270,24 @@ function FilterPanel({ voxelSize, setVoxelSize, outlierK, setOutlierK, outlierSt
 
 /* ── Clip Panel ───────────────────────────────────── */
 function ClipPanel({ boxClip, setBoxClip }: any) {
+  const doHalfClip = (axis: 'x'|'y'|'z', sign: 1|-1) => {
+    // Dispatch event that ViewerCanvas handles
+    window.dispatchEvent(new CustomEvent('clip-preset', { detail: { axis, sign } }));
+  };
   return (
     <Card title="包围盒裁剪">
+      <div className="flex gap-0.5 mb-2">
+        {[
+          ['X-', 'x', -1], ['X+', 'x', 1],
+          ['Y-', 'y', -1], ['Y+', 'y', 1],
+          ['Z-', 'z', -1], ['Z+', 'z', 1],
+        ].map(([label, ax, sign]) => (
+          <button key={label} onClick={() => doHalfClip(ax as 'x'|'y'|'z', sign as 1|-1)}
+            className="flex-1 py-0.5 rounded bg-gray-800/50 hover:bg-blue-500/20 text-[9px] text-gray-500 hover:text-blue-400 border border-gray-700/50">
+            {label}
+          </button>
+        ))}
+      </div>
       <label className="flex items-center gap-1 mb-2">
         <button onClick={() => setBoxClip({ ...boxClip, enabled: !boxClip.enabled })}
           className={`w-4 h-4 rounded-[3px] text-[9px] flex items-center justify-center ${boxClip.enabled ? 'bg-green-500 text-white' : 'bg-gray-700 text-gray-400'}`}>
@@ -358,6 +376,24 @@ function OrientPanel({ orientMode, markerCount, orientPlane, onApply, onCancel }
         </div>
       ) : null}
     </Card>
+  );
+}
+
+/* ── View presets ──────────────────────────────── */
+function ViewPresets() {
+  return (
+    <div className="flex items-center gap-0.5 bg-gray-900/80 backdrop-blur rounded-lg px-1 py-0.5 border border-gray-800">
+      {[
+        ['前', 0,0,1], ['后', 0,0,-1], ['左', -1,0,0], ['右', 1,0,0], ['上', 0,1,0], ['下', 0,-1,0],
+      ].map(([label, x, y, z]) => (
+        <button key={String(label)} onClick={() => {
+          const d = 5;
+          window.dispatchEvent(new CustomEvent('view-preset', { detail: { pos: [(x as number)*d, (y as number)*d, (z as number)*d] } }));
+        }}
+          className="text-[9px] text-gray-500 hover:text-gray-200 hover:bg-gray-700/50 rounded px-1"
+          title={`视图: ${label}`}>{String(label)}</button>
+      ))}
+    </div>
   );
 }
 
