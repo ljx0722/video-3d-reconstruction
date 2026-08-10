@@ -1,7 +1,6 @@
 import { Suspense, useState, useCallback, useRef, useEffect, useMemo } from 'react';
 import { Canvas, useFrame, useThree } from '@react-three/fiber';
-import { TrackballControls, Grid, Html, Line, OrthographicCamera, PerspectiveCamera } from '@react-three/drei';
-import ColoredViewcube from './ColoredViewcube';
+import { TrackballControls, GizmoHelper, GizmoViewcube, Grid, Html, Line, OrthographicCamera, PerspectiveCamera } from '@react-three/drei';
 import * as THREE from 'three';
 import { getResultUrl, getMeshUrl } from '../api/client';
 import ModelLoader from './ModelLoader';
@@ -529,7 +528,9 @@ export default function ViewerCanvas({
 
       {showAxes && <AxesHelper3D />}
 
-      <ColoredViewcube size={0.85} />
+      <GizmoHelper alignment="top-right" margin={[80, 80]}>
+        <GizmoViewcube faces={['右', '左', '上', '下', '前', '后']} color="#1e293b" hoverColor="#3b82f6" textColor="#ffffff" strokeColor="#64748b" />
+      </GizmoHelper>
 
       <ViewPresetHandler onUpdateClip={onUpdateClip} activeBox={activeBox} />
 
