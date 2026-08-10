@@ -53,12 +53,32 @@ export default function ViewerPage() {
   const [orientMarkers, setOrientMarkers] = useState<THREE.Vector3[] | null>(null);
   const [orientPlane, setOrientPlane] = useState<{ normal: THREE.Vector3; center: THREE.Vector3 } | null>(null);
 
+  // Lasso
+  const [lassoEnabled, setLassoEnabled] = useState(false);
+  const lassoSelRef = useRef<Set<number>>(new Set());
+  const [selectedCount, setSelectedCount] = useState(0);
+
+  // Annotations
+  const [annotations, setAnnotations] = useState<{ id: number; p1: THREE.Vector3; p2: THREE.Vector3; label: string }[]>([]);
+  const nextAnnoId = useRef(1);
+
   useEffect(() => {
     if (!jobId || job?.status !== 'completed') return;
     fetch(`/files/${jobId}/result_mesh.glb`, { method: 'HEAD' })
       .then(r => { if (r.ok) setMeshAvailable(true); })
       .catch(() => {});
   }, [jobId, job?.status]);
+
+  // Lasso selection listener
+  useEffect(() => {
+    const h = (e: Event) => {
+      const detail = (e as CustomEvent).detail as { indices: Set<number> };
+      lassoSelRef.current = detail.indices;
+      setSelectedCount(detail.indices.size);
+    };
+    window.addEventListener('lasso-selection', h);
+    return () => window.removeEventListener('lasso-selection', h);
+  }, []);
 
   // Refs
   const pointsRef = useRef<THREE.Points | null>(null);
@@ -81,7 +101,11 @@ export default function ViewerPage() {
       if (hits.length > 0) {
         measurePtsRef.current.push(hits[0].point.clone());
         if (measurePtsRef.current.length >= 2) {
-          setDistance(measurePtsRef.current[0].distanceTo(measurePtsRef.current[1]));
+          const d = measurePtsRef.current[0].distanceTo(measurePtsRef.current[1]);
+          setDistance(d);
+          // Also create annotation
+          const id = nextAnnoId.current++;
+          setAnnotations(prev => [...prev, { id, p1: measurePtsRef.current[0].clone(), p2: measurePtsRef.current[1].clone(), label: `${(d*100).toFixed(1)}cm` }]);
           setMeasureMode(false);
           measurePtsRef.current = [];
         }
@@ -133,6 +157,35 @@ export default function ViewerPage() {
     pointsRef.current.geometry = geo;
     setPointCount(newPos.length / 3);
   }, []);
+
+  // Delete key — remove selected lasso points
+  useEffect(() => {
+    const h = (e: KeyboardEvent) => {
+      if (e.key !== 'Delete' && e.key !== 'Backspace') return;
+      const sel = lassoSelRef.current;
+      if (sel.size === 0 || !pointsRef.current) return;
+      const pos = pointsRef.current.geometry.getAttribute('position');
+      const col = pointsRef.current.geometry.getAttribute('color');
+      const n = pos.count;
+      const np = new Float32Array((n - sel.size) * 3);
+      const nc = new Float32Array((n - sel.size) * 3);
+      let j = 0;
+      for (let i = 0; i < n; i++) {
+        if (sel.has(i)) continue;
+        np[j*3]=pos.getX(i); np[j*3+1]=pos.getY(i); np[j*3+2]=pos.getZ(i);
+        nc[j*3]=col.getX(i); nc[j*3+1]=col.getY(i); nc[j*3+2]=col.getZ(i);
+        j++;
+      }
+      updateGeometry(np, nc);
+      originalData.current = { pos: np, col: nc };
+      setRawSectionData({ pos: np, col: nc });
+      setOriginalCount(np.length / 3);
+      lassoSelRef.current.clear();
+      setSelectedCount(0);
+    };
+    window.addEventListener('keydown', h);
+    return () => window.removeEventListener('keydown', h);
+  }, [updateGeometry]);
 
   const doApplyOrient = useCallback(() => {
     if (!orientPlane || !originalData.current) return;
@@ -435,6 +488,8 @@ export default function ViewerPage() {
               orientMarkers={orientMarkers}
               orientPlane={orientPlane}
               onUpdateClip={setBoxClip}
+              lassoEnabled={lassoEnabled}
+              annotations={annotations}
             />
             <KeyboardHint />
             <CrossSectionView positions={rawSectionData?.pos ?? null} colors={rawSectionData?.col ?? null} />
@@ -463,6 +518,9 @@ export default function ViewerPage() {
               orientPlane={orientPlane}
               onApplyOrient={doApplyOrient}
               onCancelOrient={doCancelOrient}
+              lassoEnabled={lassoEnabled} setLassoEnabled={setLassoEnabled}
+              selectedCount={selectedCount}
+              annotations={annotations} onClearAnnotations={() => setAnnotations([])}
             />
           </>
         ):job.status==='failed'?(

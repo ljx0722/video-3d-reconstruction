@@ -26,6 +26,105 @@ interface Props {
   orientMarkers?: THREE.Vector3[] | null;
   orientPlane?: { normal: THREE.Vector3; center: THREE.Vector3 } | null;
   onUpdateClip?: (clip: BoxClip) => void;
+  lassoEnabled?: boolean;
+  annotations?: { id: number; p1: THREE.Vector3; p2: THREE.Vector3; label: string }[];
+}
+
+function LassoOverlay({ enabled }: { enabled: boolean }) {
+  const { camera, size, gl, scene } = useThree();
+  const [poly, setPoly] = useState<THREE.Vector2[]>([]);
+  const selRef = useRef<Set<number>>(new Set());
+
+  useEffect(() => {
+    if (!enabled) return;
+    const el = gl.domElement;
+    const rect = () => el.getBoundingClientRect();
+
+    const onClick = (e: MouseEvent) => {
+      if (!e.ctrlKey && !e.metaKey) return;
+      e.preventDefault(); e.stopPropagation();
+      const r = rect();
+      poly.push(new THREE.Vector2(e.clientX - r.left, e.clientY - r.top));
+      setPoly([...poly]);
+    };
+    const onDbl = () => {
+      if (poly.length < 3) return;
+      let foundPts: any = null;
+      scene.traverse((c: any) => { if (c.isPoints) foundPts = c; });
+      if (!foundPts) return;
+      const pos = foundPts.geometry.getAttribute('position');
+      const selected = new Set<number>();
+      const p3 = new THREE.Vector3();
+      const p2 = new THREE.Vector2();
+      for (let i = 0; i < pos.count; i++) {
+        p3.set(pos.getX(i), pos.getY(i), pos.getZ(i));
+        p3.project(camera);
+        p2.set((p3.x + 1) / 2 * size.width, (-p3.y + 1) / 2 * size.height);
+        if (pointInPolygon(p2, poly)) selected.add(i);
+      }
+      selRef.current = selected;
+      window.dispatchEvent(new CustomEvent('lasso-selection', { detail: { indices: selected } }));
+      setPoly([]);
+    };
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') { setPoly([]); selRef.current.clear(); window.dispatchEvent(new CustomEvent('lasso-selection', { detail: { indices: new Set<number>() } })); }
+    };
+
+    el.addEventListener('click', onClick);
+    el.addEventListener('dblclick', onDbl);
+    window.addEventListener('keydown', onKeyDown);
+    return () => { el.removeEventListener('click', onClick); el.removeEventListener('dblclick', onDbl); window.removeEventListener('keydown', onKeyDown); };
+  }, [enabled, poly, camera, size, gl, scene]);
+
+  if (!enabled || poly.length === 0) return null;
+  const pts = poly.map(v => [v.x, v.y]);
+  // SVG overlay for lasso polygon
+  return (
+    <Html fullscreen>
+      <svg className="absolute inset-0 pointer-events-none" style={{ width: '100%', height: '100%' }}>
+        <polygon points={pts.map(p => p.join(',')).join(' ')} fill="rgba(59,130,246,0.15)" stroke="#3B82F6" strokeWidth="1.5" strokeDasharray="4 2" />
+        {poly.map((v, i) => (
+          <circle key={i} cx={v.x} cy={v.y} r="3" fill="#3B82F6" />
+        ))}
+      </svg>
+    </Html>
+  );
+}
+
+function pointInPolygon(p: THREE.Vector2, poly: THREE.Vector2[]): boolean {
+  let inside = false;
+  const n = poly.length;
+  for (let i = 0, j = n - 1; i < n; j = i++) {
+    const xi = poly[i].x, yi = poly[i].y;
+    const xj = poly[j].x, yj = poly[j].y;
+    if ((yi > p.y) !== (yj > p.y) && p.x < ((xj - xi) * (p.y - yi)) / (yj - yi) + xi)
+      inside = !inside;
+  }
+  return inside;
+}
+
+function AnnotationLabels({ annotations }: { annotations: { id: number; p1: THREE.Vector3; p2: THREE.Vector3; label: string }[] }) {
+  if (!annotations || annotations.length === 0) return null;
+  return (
+    <group>
+      {annotations.map(a => {
+        const mid = new THREE.Vector3().addVectors(a.p1, a.p2).multiplyScalar(0.5);
+        const dist = a.p1.distanceTo(a.p2);
+        return (
+          <group key={a.id}>
+            <Line points={[a.p1.toArray(), a.p2.toArray()] as [number,number,number][]} color="#F59E0B" lineWidth={1.5} />
+            <mesh position={a.p1.toArray()}><sphereGeometry args={[0.015, 8, 8]} /><meshBasicMaterial color="#F59E0B" /></mesh>
+            <mesh position={a.p2.toArray()}><sphereGeometry args={[0.015, 8, 8]} /><meshBasicMaterial color="#F59E0B" /></mesh>
+            <Html position={mid.toArray()} center>
+              <div className="bg-gray-900/90 backdrop-blur px-2 py-0.5 rounded text-[10px] text-yellow-400 whitespace-nowrap border border-yellow-600/50 select-none">
+                {a.label || `${(dist * 100).toFixed(1)}cm`}
+              </div>
+            </Html>
+          </group>
+        );
+      })}
+    </group>
+  );
 }
 
 function ClipBox({ boxClip, onUpdate }: { boxClip: BoxClip; onUpdate?: (c: BoxClip) => void }) {
@@ -307,6 +406,7 @@ export default function ViewerCanvas({
   boxClip, showAxes, orthographic, splatMode, showGrid, showTrajectory = true,
   edlStrength = 0.4, orbitTarget = [0, 0, 0], viewMode = 'points', meshAvailable = false,
   orientMarkers = null, orientPlane = null, onUpdateClip,
+  lassoEnabled = false, annotations = [],
 }: Props) {
   const [camPositions, setCamPositions] = useState<Float32Array | null>(null);
   const defaultBox: BoxClip = boxClip || { enabled: false, min: [-1, -0.5, -1], max: [1, 0.5, 1] };
@@ -368,6 +468,10 @@ export default function ViewerCanvas({
       <KeyboardFly />
 
       <OrientMarkers markers={orientMarkers} plane={orientPlane} />
+
+      <LassoOverlay enabled={lassoEnabled} />
+
+      <AnnotationLabels annotations={annotations} />
 
       <EDLEffect edlStrength={edlStrength} />
     </Canvas>

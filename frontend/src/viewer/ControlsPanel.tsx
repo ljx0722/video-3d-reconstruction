@@ -29,6 +29,9 @@ interface CtrlProps {
   orientPlane?: { normal: THREE.Vector3; center: THREE.Vector3 } | null;
   onApplyOrient?: () => void;
   onCancelOrient?: () => void;
+  lassoEnabled?: boolean; setLassoEnabled?: (v: boolean) => void;
+  selectedCount?: number;
+  annotations?: any[]; onClearAnnotations?: () => void;
 }
 
 const Btn = ({ label, active, icon, onClick }: { label: string; active: boolean; icon: string; onClick: () => void }) => (
@@ -64,6 +67,13 @@ export default function ControlsPanel(p: CtrlProps) {
           className="bg-gray-900/80 backdrop-blur rounded-lg px-2.5 py-1.5 text-xs text-gray-400 border border-gray-800 hover:bg-gray-800" title="截图">
           📷
         </button>
+        {p.setLassoEnabled && (
+        <button onClick={() => p.setLassoEnabled?.(!p.lassoEnabled)}
+          className={`bg-gray-900/80 backdrop-blur rounded-lg px-2.5 py-1.5 text-xs border hover:bg-gray-800
+            ${p.lassoEnabled ? 'text-blue-400 border-blue-500/30' : 'text-gray-400 border-gray-800'}`} title="Ctrl+点击圈选">
+          {p.lassoEnabled && (p.selectedCount ?? 0) > 0 ? `✂ ${p.selectedCount}` : '✂'}
+        </button>
+        )}
         {(p.setOrientMode || p.onCancelOrient) && (
         <button onClick={() => {
           if (p.orientPlane) { if (p.onCancelOrient) p.onCancelOrient(); }
