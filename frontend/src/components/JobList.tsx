@@ -20,15 +20,17 @@ const statusColors: Record<string, string> = {
   failed: 'bg-red-500/20 text-red-400',
 };
 
-function formatBeijingTime(iso: string) {
-  return new Date(iso).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' });
+function formatBeijingTime(iso: string | null | undefined) {
+  if (!iso) return '';
+  try { return new Date(iso).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' }); }
+  catch { return iso; }
 }
 
-function formatFileSize(bytes: number) {
+function formatFileSize(bytes: number | null | undefined) {
+  if (!bytes || bytes < 0) return '';
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-  return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
 export default function JobList() {

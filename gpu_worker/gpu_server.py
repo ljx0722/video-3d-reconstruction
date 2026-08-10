@@ -363,11 +363,11 @@ def process_video(video_path: str, settings: dict, job_id: str):
     with open(glb_path, "rb") as f:
         glb_data = f.read()
 
-    # Count points for reporting
+    # Count points for reporting (ensure Python int, not numpy)
     total_pts = 0
     for name in scene.geometry:
         if hasattr(scene.geometry[name], 'vertices'):
-            total_pts += scene.geometry[name].vertices.shape[0]
+            total_pts += int(scene.geometry[name].vertices.shape[0])
 
     # ── Mesh reconstruction (Open3D Poisson) ───────────────────────────
     mesh_data = _build_mesh(vis_pred_sub, conf_pct_val, tmpdir)
@@ -487,8 +487,8 @@ def poll_and_process():
 def _update_status(job_id: str, status: str, progress: float, detail: str = "",
                    num_frames: int = 0, num_points: int = 0, processing_time_secs: float = 0):
     payload = {"status": status, "progress": progress, "detail": detail, "error_message": "",
-               "num_frames": num_frames, "num_points": num_points,
-               "processing_time_secs": processing_time_secs}
+               "num_frames": int(num_frames), "num_points": int(num_points),
+               "processing_time_secs": float(processing_time_secs)}
     data = json.dumps(payload).encode()
     req = urllib.request.Request(
         f"{BACKEND_URL}/api/v1/gpu/status/{job_id}",
