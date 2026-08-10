@@ -36,34 +36,44 @@ export default function ModelLoader({ url, pointSize, opacity = 1, onPointsReady
     const camPos: number[] = [];
     const meshList: THREE.Mesh[] = [];
 
-    scene.traverse((child: any) => {
-      if (child.isMesh) {
+    try {
+      if (scene) scene.traverse((child: any) => {
+        // Skip non-standard children that might lack geometry
+        if (!child || typeof child !== 'object') return;
+
+        if (child.isMesh) {
+          const geo = child.geometry as THREE.BufferGeometry | undefined;
+          if (geo && geo.index) {
+            meshList.push(child.clone());
+          }
+          return;
+        }
         const geo = child.geometry as THREE.BufferGeometry | undefined;
-        if (geo && geo.index) {
-          meshList.push(child.clone());
+        if (!geo || !geo.getAttribute) return;
+        const pos = geo.getAttribute('position');
+        const col = geo.getAttribute('color');
+        if (!pos || pos.count === 0) return;
+        if (pos.count < 50) {
+          let cx = 0, cy = 0, cz = 0;
+          try {
+            for (let i = 0; i < pos.count; i++) { cx += pos.getX(i); cy += pos.getY(i); cz += pos.getZ(i); }
+            camPos.push(cx / pos.count, cy / pos.count, cz / pos.count);
+          } catch { /* skip corrupted camera geometry */ }
+        } else {
+          const total = pos.count;
+          const budget = 2000000;
+          const step = total > budget ? Math.ceil(total / budget) : 1;
+          try {
+            for (let i = 0; i < total; i += step) {
+              pcPos.push(pos.getX(i), pos.getY(i), pos.getZ(i));
+              pcCol.push(col ? col.getX(i) : 1, col ? col.getY(i) : 1, col ? col.getZ(i) : 1);
+            }
+          } catch { /* skip corrupted point geometry */ }
         }
-        return;
-      }
-      const geo = child.geometry as THREE.BufferGeometry | undefined;
-      if (!geo || !geo.getAttribute) return;
-      const pos = geo.getAttribute('position');
-      const col = geo.getAttribute('color');
-      if (!pos) return;
-      if (pos.count < 50) {
-        let cx=0,cy=0,cz=0;
-        for (let i=0; i<pos.count; i++) { cx+=pos.getX(i); cy+=pos.getY(i); cz+=pos.getZ(i); }
-        camPos.push(cx/pos.count, cy/pos.count, cz/pos.count);
-      } else {
-        // Auto-downsample to max 2M points for smooth rendering
-        const total = pos.count;
-        const budget = 2000000;
-        const step = total > budget ? Math.ceil(total / budget) : 1;
-        for (let i = 0; i < total; i += step) {
-          pcPos.push(pos.getX(i), pos.getY(i), pos.getZ(i));
-          pcCol.push(col ? col.getX(i) : 1, col ? col.getY(i) : 1, col ? col.getZ(i) : 1);
-        }
-      }
-    });
+      });
+    } catch (err) {
+      console.warn('ModelLoader: scene traversal failed, using empty geometry', err);
+    }
 
     if (camPos.length > 0 && onCameraPositions) onCameraPositions(new Float32Array(camPos));
 
