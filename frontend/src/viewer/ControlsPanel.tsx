@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import type { BoxClip } from './Toolbar';
 
-type PanelId = null | 'view' | 'color' | 'filter' | 'clip' | 'measure' | 'export' | 'viewmode';
+type PanelId = null | 'view' | 'color' | 'filter' | 'clip' | 'measure' | 'export';
 
 interface CtrlProps {
   pointSize: number; setPointSize: (v: number) => void;
@@ -18,15 +18,12 @@ interface CtrlProps {
   showAxes: boolean; setShowAxes: (v: boolean) => void;
   showTrajectory: boolean; setShowTrajectory: (v: boolean) => void;
   colorMode: string; setColorMode: (m: string) => void;
-  splatMode: boolean; setSplatMode: (v: boolean) => void;
   brightness: number; setBrightness: (v: number) => void;
   onScreenshot: () => void;
   onResetView: () => void;
   showGrid: boolean; setShowGrid: (v: boolean) => void;
   onAutoClip: () => void;
   edlStrength: number; setEdlStrength: (v: number) => void;
-  viewMode?: string; setViewMode?: (v: string) => void;
-  meshAvailable?: boolean;
 }
 
 const Btn = ({ label, active, icon, onClick }: { label: string; active: boolean; icon: string; onClick: () => void }) => (
@@ -73,8 +70,7 @@ export default function ControlsPanel(p: CtrlProps) {
         {/* Color Mode */}
         <Btn icon="◉" label="着色模式" active={panel === 'color'} onClick={() => toggle('color')} />
         {panel === 'color' && <ColorPanel colorMode={p.colorMode} setColorMode={p.setColorMode}
-          brightness={p.brightness} setBrightness={p.setBrightness}
-          splatMode={p.splatMode} setSplatMode={p.setSplatMode} />}
+          brightness={p.brightness} setBrightness={p.setBrightness} />}
 
         {/* Processing / Filters */}
         <Btn icon="◇" label="点云处理" active={panel === 'filter'} onClick={() => toggle('filter')} />
@@ -100,18 +96,6 @@ export default function ControlsPanel(p: CtrlProps) {
           </div>
         )}
 
-        {/* Grid */}
-        <Btn icon="⊡" label="网格" active={p.showGrid} onClick={() => p.setShowGrid(!p.showGrid)} />
-
-        {/* View Mode: Points / Gaussian / Mesh / Wireframe */}
-        <Btn icon="◈" label="显示模式" active={panel === 'viewmode'} onClick={() => toggle('viewmode')} />
-        {panel === 'viewmode' && (
-          <ViewModePanel viewMode={p.viewMode || 'points'} setViewMode={p.setViewMode || (() => {})} meshAvailable={p.meshAvailable ?? false} />
-        )}
-
-        {/* Snap / Reset View */}
-        <Btn icon="⌂" label="复位视图" active={false} onClick={p.onResetView} />
-
         {/* Export */}
         <Btn icon="↓" label="导出" active={panel === 'export'} onClick={() => toggle('export')} />
         {panel === 'export' && <ExportPanel onExport={p.onExport} />}
@@ -120,8 +104,8 @@ export default function ControlsPanel(p: CtrlProps) {
   );
 }
 
-/* ── View Panel ───────────────────────────────────── */
-function ViewPanel({ pointSize, setPointSize, opacity, setOpacity, showAxes, setShowAxes, showTrajectory, setShowTrajectory, edlStrength, setEdlStrength }: any) {
+/* ── View Panel (merged grid + reset) ─────────────────── */
+function ViewPanel({ pointSize, setPointSize, opacity, setOpacity, showAxes, setShowAxes, showTrajectory, setShowTrajectory, edlStrength, setEdlStrength, showGrid, setShowGrid, onResetView }: any) {
   return (
     <Card title="显示设置">
       <label className="text-gray-500 block mb-1">
@@ -136,34 +120,41 @@ function ViewPanel({ pointSize, setPointSize, opacity, setOpacity, showAxes, set
       <input type="range" min={0.1} max={1} step={0.05} value={opacity}
         onChange={e => setOpacity(Number(e.target.value))} className="w-full accent-blue-500 mb-3" />
 
-      <div className="flex gap-1 mb-3">
+      <div className="flex gap-1 mb-2">
         <button onClick={() => setShowAxes(!showAxes)}
           className={`flex-1 py-1 rounded text-[10px] ${showAxes ? 'bg-blue-500/20 text-blue-400' : 'bg-gray-800/50 text-gray-500'}`}>
-          {showAxes ? '坐标轴' : '坐标轴'}
+          坐标轴
         </button>
         {setShowTrajectory && (
         <button onClick={() => setShowTrajectory(!showTrajectory)}
           className={`flex-1 py-1 rounded text-[10px] ${showTrajectory ? 'bg-blue-500/20 text-blue-400' : 'bg-gray-800/50 text-gray-500'}`}>
-          {showTrajectory ? '相机轨迹' : '相机轨迹'}
+          相机轨迹
         </button>
         )}
       </div>
 
-      {setEdlStrength && (
-        <>
-          <label className="text-gray-500 block mb-1">
-            Potree EDL <span className="text-gray-600">{(edlStrength ?? 0.4).toFixed(1)}</span>
-          </label>
-          <input type="range" min={0} max={1} step={0.1} value={edlStrength ?? 0.4}
-            onChange={e => setEdlStrength(Number(e.target.value))} className="w-full accent-blue-500 mb-1" />
-        </>
-      )}
+      <div className="flex gap-1 mb-3">
+        <button onClick={() => setShowGrid(!showGrid)}
+          className={`flex-1 py-1 rounded text-[10px] ${showGrid ? 'bg-blue-500/20 text-blue-400' : 'bg-gray-800/50 text-gray-500'}`}>
+          {showGrid ? '网格 ✓' : '网格'}
+        </button>
+        <button onClick={onResetView}
+          className="flex-1 py-1 rounded text-[10px] bg-gray-800/50 text-gray-500 hover:bg-gray-700/50">
+          复位视图
+        </button>
+      </div>
+
+      <label className="text-gray-500 block mb-1">
+        EDL <span className="text-gray-600">{(edlStrength ?? 0).toFixed(1)}</span>
+      </label>
+      <input type="range" min={0} max={1} step={0.1} value={edlStrength ?? 0}
+        onChange={e => setEdlStrength(Number(e.target.value))} className="w-full accent-blue-500 mb-1" />
     </Card>
   );
 }
 
-/* ── Color Panel ──────────────────────────────────── */
-function ColorPanel({ colorMode, setColorMode, brightness, setBrightness, splatMode, setSplatMode }: any) {
+/* ── Color Panel (gaussian toggle removed) ─────────── */
+function ColorPanel({ colorMode, setColorMode, brightness, setBrightness }: any) {
   return (
     <Card title="着色模式">
       <div className="grid grid-cols-3 gap-1 mb-3">
@@ -184,14 +175,7 @@ function ColorPanel({ colorMode, setColorMode, brightness, setBrightness, splatM
 
       <label className="text-gray-500 block mb-1">亮度 <span className="text-gray-600">{brightness.toFixed(1)}</span></label>
       <input type="range" min={0.3} max={2} step={0.1} value={brightness}
-        onChange={e => setBrightness(Number(e.target.value))} className="w-full accent-blue-500 mb-3" />
-
-      <div className="flex gap-1">
-        <button onClick={() => setSplatMode(!splatMode)}
-          className={`flex-1 py-1 rounded text-[10px] ${splatMode ? 'bg-purple-500/20 text-purple-400' : 'bg-gray-800/50 text-gray-500'}`}>
-          {splatMode ? '✓ 高斯显示' : '高斯显示'}
-        </button>
-      </div>
+        onChange={e => setBrightness(Number(e.target.value))} className="w-full accent-blue-500" />
     </Card>
   );
 }
@@ -287,31 +271,6 @@ function ExportPanel({ onExport }: { onExport: (fmt: string) => void }) {
           <button key={fmt} onClick={() => onExport(fmt)}
             className="flex justify-between bg-gray-800/50 hover:bg-gray-700/50 rounded px-2 py-1.5 text-gray-400 hover:text-white transition-colors text-[10px]">
             <span className="font-mono">.{fmt.toLowerCase()}</span><span className="text-gray-600">{desc}</span>
-          </button>
-        ))}
-      </div>
-    </Card>
-  );
-}
-
-/* ── ViewMode Panel ─────────────────────────────────── */
-function ViewModePanel({ viewMode, setViewMode, meshAvailable }: { viewMode: string; setViewMode: (v: string) => void; meshAvailable: boolean }) {
-  return (
-    <Card title="显示模式">
-      <div className="flex flex-col gap-1">
-        {[
-          ['points', '点云', '⊙'],
-          ['gaussian', '高斯溅射', '◉'],
-          ['mesh', 'Mesh 实体', '◈'],
-          ['wireframe', '线框', '⊡'],
-        ].map(([k, label, icon]) => (
-          <button key={k} onClick={() => setViewMode(k)}
-            disabled={((k === 'mesh' || k === 'wireframe') && !meshAvailable)}
-            className={`flex justify-between items-center rounded px-2 py-1.5 text-[10px] transition-colors
-              ${viewMode === k ? 'bg-blue-500/20 text-blue-400 border border-blue-500/30' : 'bg-gray-800/50 text-gray-500 hover:bg-gray-700/50'}
-              ${(k === 'mesh' || k === 'wireframe') && !meshAvailable ? 'opacity-30 cursor-not-allowed' : ''}`}>
-            <span>{icon}</span>
-            <span>{label}</span>
           </button>
         ))}
       </div>

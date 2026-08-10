@@ -28,11 +28,11 @@ export default function ViewerPage() {
   const [showTrajectory, setShowTrajectory] = useState(true);
   const [orthographic, setOrthographic] = useState(false);
   const [colorMode, setColorMode] = useState('rgb');
-  const [splatMode, setSplatMode] = useState(false);
   const [brightness, setBrightness] = useState(1.0);
   const [showGrid, setShowGrid] = useState(false);
   const [edlStrength, setEdlStrength] = useState(0.0);
   const [viewMode, setViewMode] = useState<string>('points');
+  const splatMode = viewMode === 'gaussian';
 
   // Processing
   const [pointCount, setPointCount] = useState(0);
@@ -415,6 +415,8 @@ export default function ViewerPage() {
             {(job as any).status !== 'processing' && (
             <>
             <CrossSectionView positions={rawSectionData?.pos ?? null} colors={rawSectionData?.col ?? null} />
+            {/* Top-center display mode bar */}
+            <DisplayModeBar viewMode={viewMode} setViewMode={setViewMode} meshAvailable={meshAvailable} />
             <ControlsPanel
               pointSize={pointSize} setPointSize={setPointSize}
               opacity={opacity} setOpacity={setOpacity}
@@ -429,15 +431,12 @@ export default function ViewerPage() {
               onExport={doExport}
               showAxes={showAxes} setShowAxes={setShowAxes}
               colorMode={colorMode} setColorMode={setColorMode}
-              splatMode={splatMode} setSplatMode={setSplatMode}
               brightness={brightness} setBrightness={setBrightness}
               onScreenshot={doScreenshot} onResetView={doResetView}
               showGrid={showGrid} setShowGrid={setShowGrid}
               onAutoClip={doAutoClip}
               edlStrength={edlStrength} setEdlStrength={setEdlStrength}
               showTrajectory={showTrajectory} setShowTrajectory={setShowTrajectory}
-              viewMode={viewMode} setViewMode={setViewMode}
-              meshAvailable={meshAvailable}
             />
             </>
             )}
@@ -447,6 +446,33 @@ export default function ViewerPage() {
         ):(
           <div className="absolute inset-0 flex items-center justify-center"><div className="text-center"><div className="w-16 h-16 mx-auto mb-4 border-4 border-blue-500 border-t-transparent rounded-full animate-spin" /><p className="text-gray-400 text-sm">正在重建三维模型...</p></div></div>
         )}
+      </div>
+    </div>
+  );
+}
+
+function DisplayModeBar({ viewMode, setViewMode, meshAvailable }: { viewMode: string; setViewMode: (v: string) => void; meshAvailable: boolean }) {
+  const modes = [
+    ['points', '点云'],
+    ['gaussian', '高斯溅射'],
+    ['mesh', 'Mesh'],
+    ['wireframe', '线框'],
+  ] as const;
+
+  return (
+    <div className="absolute top-3 left-1/2 -translate-x-1/2 z-10">
+      <div className="bg-gray-900/95 backdrop-blur rounded-full px-1 py-1 flex gap-0.5 border border-gray-800 shadow-xl">
+        {modes.map(([k, label]) => (
+          <button key={k} onClick={() => setViewMode(k)}
+            disabled={(k === 'mesh' || k === 'wireframe') && !meshAvailable}
+            className={`px-4 py-1 rounded-full text-[11px] font-medium transition-all duration-200
+              ${viewMode === k
+                ? 'bg-blue-500 text-white shadow-md shadow-blue-500/30'
+                : 'text-gray-500 hover:text-gray-300 hover:bg-gray-800/70'}
+              ${(k === 'mesh' || k === 'wireframe') && !meshAvailable ? 'opacity-25 cursor-not-allowed hover:text-gray-500 hover:bg-transparent' : ''}`}>
+            {label}
+          </button>
+        ))}
       </div>
     </div>
   );
