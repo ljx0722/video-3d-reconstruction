@@ -470,10 +470,8 @@ def _upload_result(job_id: str, glb_data: bytes):
                 raise
 
 def _build_mesh(vis_pred: dict, conf_pct: float, tmpdir: str) -> bytes | None:
-    """Build triangle mesh from world points using Open3D Poisson reconstruction.
-    Returns GLB bytes or None if reconstruction failed.
-    NOTE: Disabled due to Poisson hanging on RTX 3090. Re-enable when fixed."""
-    return None  # mesh disabled (Poisson hangs on this instance)
+    """Build triangle mesh from world points.
+    Uses Poisson (depth=6, 60s timeout) with Ball Pivoting fallback."""
 
     try:
         import open3d as o3d
@@ -482,7 +480,8 @@ def _build_mesh(vis_pred: dict, conf_pct: float, tmpdir: str) -> bytes | None:
         return None
 
     try:
-        import numpy as np  # already imported by caller but be safe
+        import numpy as np
+        import threading
 
         xyz = vis_pred.get("world_points_from_depth")
         if xyz is None:
@@ -512,9 +511,8 @@ def _build_mesh(vis_pred: dict, conf_pct: float, tmpdir: str) -> bytes | None:
 
         # ── Color handling ──────────────────────────────────────────────
         if images_arr is not None:
-            # images: (F, C, H, W) or (F, H, W, C)
             if images_arr.ndim == 4 and images_arr.shape[1] == 3:
-                images_arr = np.transpose(images_arr, (0, 2, 3, 1))  # → (F, H, W, 3)
+                images_arr = np.transpose(images_arr, (0, 2, 3, 1))
             rgb_flat = images_arr.reshape(-1, 3).astype(np.float64)
             if depth_conf_arr is not None:
                 rgb_flat = rgb_flat[mask]
@@ -527,45 +525,77 @@ def _build_mesh(vis_pred: dict, conf_pct: float, tmpdir: str) -> bytes | None:
         if rgb_flat is not None:
             pcd.colors = o3d.utility.Vector3dVector(np.clip(rgb_flat, 0, 1))
 
-        # ── Downsample (more aggressive for speed) ────────────────────
-        bbox_diag = np.linalg.norm(pcd.get_max_bound() - pcd.get_min_bound())
-        voxel_size = max(0.01, bbox_diag * 0.005)  # rougher, faster
+        # ── Downsample ──────────────────────────────────────────────────
+        bbox = pcd.get_max_bound() - pcd.get_min_bound()
+        bbox_diag = float(np.linalg.norm(bbox))
+        voxel_size = max(0.01, bbox_diag * 0.005)
         pcd = pcd.voxel_down_sample(voxel_size)
         logger.info(f"Mesh downsample: {len(pcd.points)} pts (voxel={voxel_size:.4f})")
 
-        if len(pcd.points) < 100:
+        if len(pcd.points) < 50:
             return None
 
-        # ── Normal estimation (faster tangent plane) ───────────────────
+        # ── Normal estimation ───────────────────────────────────────────
         radius = max(voxel_size * 3, bbox_diag * 0.01)
         logger.info(f"Mesh normals: {len(pcd.points)} pts, radius={radius:.4f}")
         pcd.estimate_normals(o3d.geometry.KDTreeSearchParamHybrid(radius=radius, max_nn=20))
         try:
             pcd.orient_normals_consistent_tangent_plane(k=20)
         except Exception:
-            pass  # tangent plane orientation fails on sparse data, skip
+            pass
 
-        # ── Poisson reconstruction (faster depth) ──────────────────────
-        depth = 7 if len(pcd.points) < 150000 else 8
-        logger.info(f"Mesh Poisson depth={depth}...")
-        mesh, densities = o3d.geometry.TriangleMesh.create_from_point_cloud_poisson(pcd, depth=depth)
+        # ── Try Poisson with 60s timeout ────────────────────────────────
+        mesh_result = {}
+        exception = {}
 
-        # Remove low-density triangles (bottom 5%)
-        if densities is not None and len(densities) > 0:
-            thresh = np.quantile(densities, 0.05)
-            vertices_to_remove = densities < thresh
-            mesh.remove_vertices_by_mask(vertices_to_remove)
+        def _run_poisson():
+            try:
+                m, d = o3d.geometry.TriangleMesh.create_from_point_cloud_poisson(pcd, depth=6)
+                mesh_result['mesh'] = m
+                mesh_result['densities'] = d
+            except Exception as ex:
+                exception['poisson'] = ex
 
-        logger.info(f"Poisson mesh: {len(mesh.vertices)} verts, {len(mesh.triangles)} faces (depth={depth})")
+        t = threading.Thread(target=_run_poisson)
+        t.start()
+        t.join(timeout=60)
 
-        if len(mesh.triangles) < 10:
+        if t.is_alive():
+            logger.warning("Poisson timed out after 60s, falling back to Ball Pivoting")
+            t.join(timeout=0)  # release thread, will keep running but we ignore it
+
+            # ── Ball Pivoting fallback ──────────────────────────────────
+            r1, r2, r3 = bbox_diag * 0.02, bbox_diag * 0.05, bbox_diag * 0.15
+            try:
+                mesh = o3d.geometry.TriangleMesh.create_from_point_cloud_ball_pivoting(
+                    pcd, o3d.utility.DoubleVector([r1, r2, r3]))
+            except Exception:
+                logger.exception("Ball Pivoting also failed")
+                return None
+
+            logger.info(f"Ball Pivoting mesh: {len(mesh.vertices)} verts, {len(mesh.triangles)} faces")
+        elif 'mesh' in mesh_result:
+            mesh = mesh_result['mesh']
+            densities = mesh_result.get('densities')
+
+            # Remove low-density triangles (bottom 5%)
+            if densities is not None and len(densities) > 0:
+                thresh = np.quantile(densities, 0.05)
+                vertices_to_remove = densities < thresh
+                mesh.remove_vertices_by_mask(vertices_to_remove)
+
+            logger.info(f"Poisson mesh: {len(mesh.vertices)} verts, {len(mesh.triangles)} faces (depth=6)")
+        else:
+            logger.warning(f"Poisson failed: {exception.get('poisson', 'unknown')}")
             return None
 
-        # ── Vertex color transfer (KDTree nearest-neighbor) ─────────────
+        if len(mesh.triangles) < 5:
+            return None
+
+        # ── Vertex color transfer ──────────────────────────────────────
         pcd_tree = o3d.geometry.KDTreeFlann(pcd)
         mesh_verts = np.asarray(mesh.vertices, dtype=np.float64)
         mesh_colors = np.zeros_like(mesh_verts)
-        pcd_pts = np.asarray(pcd.points)
         pcd_cols = np.asarray(pcd.colors)
         for i in range(len(mesh_verts)):
             _, idx, _ = pcd_tree.search_knn_vector_3d(mesh_verts[i], 1)
