@@ -477,7 +477,7 @@ export default function ViewerPage() {
       {/* Main */}
       <div className="flex-1 relative bg-black">
         <div className="absolute inset-0" ref={el=>{if(el){const c=el.querySelector('canvas');if(c&&c!==canvasEl)setCanvasEl(c as HTMLCanvasElement);}}} />
-        {(job.status==='completed' || (job as any).status==='processing')?(
+        {(job.status==='completed')?(
           <>
             <ViewerCanvas jobId={job.id} pointSize={pointSize} opacity={opacity}
               onPointsReady={handlePointsReady} boxClip={boxClip}
@@ -526,6 +526,14 @@ export default function ViewerPage() {
               annotations={annotations} onClearAnnotations={() => setAnnotations([])}
             />
           </>
+        ):isProcessing?(
+          <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+            <div className="text-center">
+              <div className="w-16 h-16 mx-auto mb-4 border-4 border-blue-500 border-t-transparent rounded-full animate-spin" />
+              <p className="text-gray-400 text-sm">正在重建三维模型...</p>
+              <p className="text-gray-600 text-xs mt-1">{Math.round(progressPct)}%</p>
+            </div>
+          </div>
         ):job.status==='failed'?(
           <div className="absolute inset-0 flex items-center justify-center text-gray-500"><div className="text-center"><div className="text-4xl mb-3">!</div><p>处理失败</p></div></div>
         ):(
