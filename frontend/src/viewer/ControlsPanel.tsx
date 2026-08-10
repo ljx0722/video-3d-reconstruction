@@ -23,7 +23,6 @@ interface CtrlProps {
   onScreenshot: () => void;
   onResetView: () => void;
   showGrid: boolean; setShowGrid: (v: boolean) => void;
-  onAutoClip: () => void;
   edlStrength: number; setEdlStrength: (v: number) => void;
   orientMode?: boolean; setOrientMode?: (v: boolean) => void;
   orientMarkers?: THREE.Vector3[] | null;
@@ -102,7 +101,7 @@ export default function ControlsPanel(p: CtrlProps) {
         {/* Clipping */}
         <Btn icon="⊞" label="包围盒裁剪" active={panel === 'clip'} onClick={() => toggle('clip')} />
         {panel === 'clip' && <ClipPanel
-          boxClip={p.boxClip} setBoxClip={p.setBoxClip} onAutoClip={p.onAutoClip} />}
+          boxClip={p.boxClip} setBoxClip={p.setBoxClip} />}
 
         {/* Measure */}
         <Btn icon="⟷" label="测量" active={panel === 'measure' || p.measureMode}
@@ -258,19 +257,14 @@ function FilterPanel({ voxelSize, setVoxelSize, outlierK, setOutlierK, outlierSt
 }
 
 /* ── Clip Panel ───────────────────────────────────── */
-function ClipPanel({ boxClip, setBoxClip, onAutoClip }: any) {
+function ClipPanel({ boxClip, setBoxClip }: any) {
   return (
     <Card title="包围盒裁剪">
-      <button onClick={onAutoClip}
-        className="w-full bg-blue-500/20 hover:bg-blue-500/30 text-blue-400 rounded px-2 py-1 text-[10px] mb-2 border border-blue-500/20">
-        ▣ 自动适配点云范围
-      </button>
-
       <label className="flex items-center gap-1 mb-2">
         <button onClick={() => setBoxClip({ ...boxClip, enabled: !boxClip.enabled })}
           className={`w-4 h-4 rounded-[3px] text-[9px] flex items-center justify-center ${boxClip.enabled ? 'bg-green-500 text-white' : 'bg-gray-700 text-gray-400'}`}>
           {boxClip.enabled ? '✓' : ''}</button>
-        <span className="text-gray-400 text-[10px]">启用裁剪盒</span>
+        <span className="text-gray-400 text-[10px]">启用裁剪盒（拖拽彩色方块调节）</span>
       </label>
 
       {boxClip.enabled && (

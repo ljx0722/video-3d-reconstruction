@@ -31,7 +31,7 @@ interface Props {
 function ClipBox({ boxClip, onUpdate }: { boxClip: BoxClip; onUpdate?: (c: BoxClip) => void }) {
   if (!boxClip.enabled) return null;
   const { camera, size, gl } = useThree();
-  const dragRef = useRef<{ idx: number; sign: 1 | -1 } | null>(null);
+  const dragRef = useRef<{ idx: number; sign: 1 | -1; initVal: number; initMouse: number } | null>(null);
   const handleRefs = useRef<THREE.Mesh[]>([]);
   const [mx, my, mz] = boxClip.min; const [Mx, My, Mz] = boxClip.max;
   const ctr: [number, number, number] = [(mx + Mx) / 2, (my + My) / 2, (mz + Mz) / 2];
@@ -60,7 +60,16 @@ function ClipBox({ boxClip, onUpdate }: { boxClip: BoxClip; onUpdate?: (c: BoxCl
       const hits = rc.intersectObjects(targets, false);
       if (hits.length > 0) {
         const i = targets.indexOf(hits[0].object as THREE.Mesh);
-        if (i >= 0) { dragRef.current = { idx: handles[i].idx, sign: handles[i].sign }; e.stopPropagation(); }
+        if (i >= 0) {
+          const h = handles[i];
+          const key = h.sign > 0 ? 'max' : 'min';
+          dragRef.current = {
+            idx: h.idx, sign: h.sign,
+            initVal: boxClip[key][h.idx],
+            initMouse: h.idx === 0 ? mouse.x : h.idx === 1 ? -mouse.y : mouse.y
+          };
+          e.stopPropagation();
+        }
       }
     };
     const onMove = (e: PointerEvent) => {
@@ -68,19 +77,22 @@ function ClipBox({ boxClip, onUpdate }: { boxClip: BoxClip; onUpdate?: (c: BoxCl
       const dr = dragRef.current;
       mouse.x = (e.offsetX / size.width) * 2 - 1;
       mouse.y = -(e.offsetY / size.height) * 2 + 1;
-      rc.setFromCamera(mouse, camera);
+      // Ray through handle's current plane (plane at handle world coords, not origin)
       const axisVec = new THREE.Vector3(); axisVec.setComponent(dr.idx, 1);
-      const perpPlane = new THREE.Plane(axisVec, 0);
+      rc.setFromCamera(mouse, camera);
       const pt = new THREE.Vector3();
+      // Project onto a plane at the handle's current world coordinate
+      const currentVal = boxClip[dr.sign > 0 ? 'max' : 'min'][dr.idx];
+      const perpPlane = new THREE.Plane(axisVec, -currentVal);
       if (!rc.ray.intersectPlane(perpPlane, pt) || !onUpdate) return;
       const val = pt.getComponent(dr.idx);
       const key = dr.sign > 0 ? 'max' : 'min';
       const other = dr.sign > 0 ? 'min' : 'max';
       const arr = [...boxClip[key]] as [number, number, number];
       arr[dr.idx] = Number(val.toFixed(4));
-      // Clamp to avoid flipping faces
-      if (dr.sign > 0) arr[dr.idx] = Math.max(arr[dr.idx], boxClip[other][dr.idx] + 0.001);
-      else arr[dr.idx] = Math.min(arr[dr.idx], boxClip[other][dr.idx] - 0.001);
+      // Clamp
+      if (dr.sign > 0) arr[dr.idx] = Math.max(arr[dr.idx], boxClip[other][dr.idx] + 0.0005);
+      else arr[dr.idx] = Math.min(arr[dr.idx], boxClip[other][dr.idx] - 0.0005);
       onUpdate({ ...boxClip, [key]: arr });
     };
     const onUp = () => { dragRef.current = null; };

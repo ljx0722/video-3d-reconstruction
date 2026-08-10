@@ -315,19 +315,6 @@ export default function ViewerPage() {
 
   const doResetView = useCallback(() => { setOrthographic(false); }, []);
 
-  const doAutoClip = useCallback(() => {
-    if (!originalData.current) return;
-    const pos = originalData.current.pos;
-    let mx=Infinity,Mx=-Infinity,my=Infinity,My=-Infinity,mz=Infinity,Mz=-Infinity;
-    for (let i=0;i<pos.length;i+=3) {
-      mx=Math.min(mx,pos[i]); Mx=Math.max(Mx,pos[i]);
-      my=Math.min(my,pos[i+1]); My=Math.max(My,pos[i+1]);
-      mz=Math.min(mz,pos[i+2]); Mz=Math.max(Mz,pos[i+2]);
-    }
-    const pad = 0.02;
-    setBoxClip({ enabled: true, min: [mx-pad,my-pad,mz-pad], max: [Mx+pad,My+pad,Mz+pad] });
-  }, []);
-
   const applyColor = useCallback((mode: string, b: number) => {
     const pts = pointsRef.current;
     if (!pts) return;
@@ -469,7 +456,6 @@ export default function ViewerPage() {
               brightness={brightness} setBrightness={setBrightness}
               onScreenshot={doScreenshot} onResetView={doResetView}
               showGrid={showGrid} setShowGrid={setShowGrid}
-              onAutoClip={doAutoClip}
               edlStrength={edlStrength} setEdlStrength={setEdlStrength}
               showTrajectory={showTrajectory} setShowTrajectory={setShowTrajectory}
               orientMode={orientMode} setOrientMode={setOrientMode}
