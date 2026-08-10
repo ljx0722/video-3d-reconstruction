@@ -47,46 +47,6 @@ export default function ViewerPage() {
   const measurePtsRef = useRef<THREE.Vector3[]>([]);
   const [distance, setDistance] = useState<number | null>(null);
 
-  // Streaming
-  const [streamBuffer, setStreamBuffer] = useState<Float32Array | null>(null);
-  const [streamAppend, setStreamAppend] = useState(false);
-  const wsRef = useRef<WebSocket | null>(null);
-
-  // Connect WebSocket for live point cloud streaming during processing
-  useEffect(() => {
-    if (!jobId) return;
-    const status = (job as any)?.status;
-    if (status !== 'processing' && status !== 'uploaded') return;
-
-    const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const ws = new WebSocket(`${proto}//${location.host}/ws/${jobId}`);
-    ws.binaryType = 'arraybuffer';
-    wsRef.current = ws;
-
-    ws.onmessage = (e) => {
-      if (e.data instanceof ArrayBuffer) {
-        const bytes = new Uint8Array(e.data);
-        // Find null byte separator between JSON header and binary
-        let nullIdx = -1;
-        for (let i = 0; i < Math.min(bytes.length, 200); i++) {
-          if (bytes[i] === 0) { nullIdx = i; break; }
-        }
-        if (nullIdx > 0) {
-          const header = JSON.parse(new TextDecoder().decode(bytes.slice(0, nullIdx)));
-          if (header.type === 'batch') {
-            const fdata = bytes.slice(nullIdx + 1);
-            const floats = new Float32Array(fdata.buffer, fdata.byteOffset, fdata.byteLength / 4);
-            setStreamBuffer(floats);
-            setStreamAppend(header.batch > 0);
-          }
-        }
-      }
-    };
-    ws.onerror = () => {};  // Fallback to polling-based progress
-
-    return () => { ws.close(); wsRef.current = null; };
-  }, [jobId, job?.status]);
-
   useEffect(() => {
     if (!jobId || job?.status !== 'completed') return;
     fetch(`/files/${jobId}/result_mesh.glb`, { method: 'HEAD' })
@@ -408,9 +368,6 @@ export default function ViewerPage() {
               orbitTarget={orbitTarget}
               viewMode={viewMode as any}
               meshAvailable={meshAvailable}
-              streamBuffer={(job as any).status === 'processing' ? streamBuffer : null}
-              streamAppend={streamAppend}
-              liveMode={(job as any).status === 'processing'}
             />
             {(job as any).status !== 'processing' && (
             <>

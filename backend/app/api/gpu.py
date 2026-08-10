@@ -131,35 +131,4 @@ async def upload_result_mesh(job_id: str, request: Request):
     return {"ok": True}
 
 
-# ── Streaming WebSocket manager ──────────────────────────────────
-_stream_connections: dict[str, list] = {}
-
-
-@router.post("/stream/{job_id}")
-async def receive_stream_batch(job_id: str, request: Request, batch: int = 0, count: int = 0):
-    """Receive binary point cloud batch from GPU Worker, broadcast to WebSocket clients."""
-    data = await request.body()
-
-    # Broadcast binary data to all WebSocket clients for this job
-    connections = _stream_connections.get(job_id, [])
-    if connections:
-        # Send header JSON first: {"type":"batch","batch":N,"count":N}
-        import json as _json
-        header = _json.dumps({"type": "batch", "batch": batch, "count": count}).encode()
-        for ws in list(connections):
-            try:
-                await ws.send_bytes(header + b"\x00" + data)
-            except Exception:
-                pass
-
-    # Also update job progress
-    if batch >= 0 and count > 0:
-        async with async_session() as session:
-            result = await session.execute(select(Job).where(Job.id == job_id))
-            job = result.scalar_one_or_none()
-            if job and job.status in ("processing", "uploaded"):
-                job.status = "processing"
-                job.progress = min(0.85, 0.1 + batch * 0.05)  # 5% per batch
-                await session.commit()
-
-    return {"ok": True, "sent_to": len(connections)}
+# ── Result upload endpoints ──────────────────────────────────

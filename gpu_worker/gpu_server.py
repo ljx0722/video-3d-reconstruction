@@ -101,13 +101,16 @@ def process_video(video_path: str, settings: dict, job_id: str):
 
     load_model()
 
+    # Update progress now that model is loaded (took ~15-20s for 7GB checkpoint)
+    _update_status(job_id, "processing", 0.11, "模型已加载, 开始处理视频...")
+
     t_start = time.time()
 
     fps = settings.get("fps", 10)
     mode = settings.get("mode", "streaming")
 
     # ── Extract frames ─────────────────────────────────────────────────
-    _update_status(job_id, "processing", 0.02, "正在解码视频帧...")
+    _update_status(job_id, "processing", 0.12, "正在解码视频帧...")
 
     cap = cv2.VideoCapture(video_path)
     src_fps = cap.get(cv2.CAP_PROP_FPS) or 30
@@ -176,7 +179,7 @@ def process_video(video_path: str, settings: dict, job_id: str):
     logger.info(f"Extracted {num_frames} frames (total={total_frames}, interval={interval})")
 
     # ── Preprocess (exactly as demo.py) ─────────────────────────────────
-    _update_status(job_id, "processing", 0.08, f"预处理 {num_frames} 帧图像...")
+    _update_status(job_id, "processing", 0.15, f"预处理 {num_frames} 帧图像...")
     images = load_and_preprocess_images(frame_paths, mode="crop", image_size=518, patch_size=14)
     images = images.to(_device)
 
@@ -271,59 +274,6 @@ def process_video(video_path: str, settings: dict, job_id: str):
         depth_t = vis_pred["depth"]; extrinsics = vis_pred["extrinsic"]; intrinsics = vis_pred["intrinsic"]
         world_pts = unproject_depth_map_to_point_map(depth_t, extrinsics, intrinsics)
         vis_pred["world_points_from_depth"] = world_pts
-
-    # ── Stream point cloud batches to frontend during processing ───────
-    _update_status(job_id, "processing", 0.30, "流式推送点云到浏览器...")
-    world_pts_arr = vis_pred["world_points_from_depth"]  # (F, H, W, 3)
-    images_arr = vis_pred.get("images")                    # (F, H, W, 3) or (F, 3, H, W)
-    depth_conf_arr = vis_pred.get("depth_conf")            # (F, H, W)
-    num_stream_frames = world_pts_arr.shape[0]
-    stream_stride = settings.get("_dynamic_stride", 2)
-    stream_conf_pct = settings.get("_conf_pct", 20)
-
-    # Confidence threshold for per-batch streaming
-    if depth_conf_arr is not None:
-        all_conf = depth_conf_arr.ravel()
-        conf_cutoff = np.percentile(all_conf, stream_conf_pct) if all_conf.size > 0 else 0
-    else:
-        conf_cutoff = 0
-
-    batch_size = max(1, min(10, num_stream_frames // 5))
-    total_streamed = 0
-    for batch_start in range(0, num_stream_frames, batch_size):
-        batch_end = min(batch_start + batch_size, num_stream_frames)
-        batch_points = []
-        for fi in range(batch_start, batch_end):
-            pts = world_pts_arr[fi, ::stream_stride, ::stream_stride].reshape(-1, 3).astype(np.float32)
-            if depth_conf_arr is not None:
-                conf = depth_conf_arr[fi, ::stream_stride, ::stream_stride].ravel()
-                mask = conf > conf_cutoff
-                pts = pts[mask]
-            if images_arr is not None:
-                img = images_arr[fi]
-                if img.ndim == 3 and img.shape[0] == 3:  # (C,H,W) → (H,W,C)
-                    img = np.transpose(img, (1, 2, 0))
-                if img.shape[:2] == (world_pts_arr.shape[1], world_pts_arr.shape[2]):
-                    img_ds = img[::stream_stride, ::stream_stride]
-                    colors = img_ds.reshape(-1, 3).astype(np.float32)
-                    if depth_conf_arr is not None:
-                        colors = colors[mask]
-                else:
-                    colors = np.full_like(pts, 0.6, dtype=np.float32)
-            else:
-                colors = np.full_like(pts, 0.6, dtype=np.float32)
-            interleaved = np.empty((pts.shape[0], 6), dtype=np.float32)
-            interleaved[:, :3] = pts
-            interleaved[:, 3:] = colors
-            batch_points.append(interleaved)
-        if not batch_points:
-            continue
-        packed = np.concatenate(batch_points, axis=0).tobytes()
-        batch_idx = batch_start // batch_size
-        _push_stream_batch(job_id, packed, batch_idx, len(batch_points))
-        total_streamed += sum(b.shape[0] for b in batch_points)
-
-    logger.info(f"Streamed {total_streamed} points over {max(1, (num_stream_frames + batch_size - 1) // batch_size)} batches")
 
     _update_status(job_id, "processing", 0.85, "导出GLB模型...")
     from lingbot_map.vis.glb_export import predictions_to_glb
@@ -521,7 +471,10 @@ def _upload_result(job_id: str, glb_data: bytes):
 
 def _build_mesh(vis_pred: dict, conf_pct: float, tmpdir: str) -> bytes | None:
     """Build triangle mesh from world points using Open3D Poisson reconstruction.
-    Returns GLB bytes or None if reconstruction failed."""
+    Returns GLB bytes or None if reconstruction failed.
+    NOTE: Disabled due to Poisson hanging on RTX 3090. Re-enable when fixed."""
+    return None  # mesh disabled (Poisson hangs on this instance)
+
     try:
         import open3d as o3d
     except ImportError:
@@ -649,22 +602,6 @@ def _upload_mesh(job_id: str, mesh_data: bytes):
                 time.sleep(5)
             else:
                 raise
-
-def _push_stream_batch(job_id: str, data: bytes, batch: int, frame_count: int):
-    """Push a point cloud batch to the backend for live streaming to WebSocket clients."""
-    try:
-        req = urllib.request.Request(
-            f"{BACKEND_URL}/api/v1/gpu/stream/{job_id}?batch={batch}&count={frame_count}",
-            data=data,
-            headers={
-                "Content-Type": "application/octet-stream",
-                "User-Agent": "gpu-worker/1.0",
-            },
-            method="POST",
-        )
-        urllib.request.urlopen(req, timeout=30)
-    except Exception as e:
-        logger.warning(f"Stream batch {batch} failed: {e}")
 
 if __name__ == "__main__":
     poll_and_process()

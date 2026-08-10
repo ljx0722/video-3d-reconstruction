@@ -4,7 +4,6 @@ import { TrackballControls, GizmoHelper, GizmoViewport, Grid, Html, Line, Orthog
 import * as THREE from 'three';
 import { getResultUrl, getMeshUrl } from '../api/client';
 import ModelLoader from './ModelLoader';
-import StreamLoader from './StreamLoader';
 import EDLEffect from './EDLEffect';
 import type { BoxClip } from './Toolbar';
 
@@ -21,9 +20,6 @@ interface Props {
   showGrid?: boolean;
   showTrajectory?: boolean;
   edlStrength?: number;
-  streamBuffer?: Float32Array | null;
-  streamAppend?: boolean;
-  liveMode?: boolean;
   orbitTarget?: [number, number, number];
   viewMode?: 'points' | 'gaussian' | 'mesh' | 'wireframe';
   meshAvailable?: boolean;
@@ -132,8 +128,7 @@ function AxesHelper3D() {
 export default function ViewerCanvas({
   jobId, pointSize, opacity = 1, onPointsReady, onMeshReady,
   boxClip, showAxes, orthographic, splatMode, showGrid, showTrajectory = true,
-  edlStrength = 0.4, streamBuffer, streamAppend, liveMode,
-  orbitTarget = [0, 0, 0], viewMode = 'points', meshAvailable = false,
+  edlStrength = 0.4, orbitTarget = [0, 0, 0], viewMode = 'points', meshAvailable = false,
 }: Props) {
   const [camPositions, setCamPositions] = useState<Float32Array | null>(null);
   const defaultBox: BoxClip = boxClip || { enabled: false, min: [-1, -0.5, -1], max: [1, 0.5, 1] };
@@ -165,29 +160,17 @@ export default function ViewerCanvas({
       <directionalLight position={[5, 5, 5]} intensity={0.4} />
 
       <Suspense fallback={null}>
-        {liveMode || streamBuffer ? (
-          <StreamLoader
-            pointSize={pointSize}
-            opacity={opacity}
-            onPointsReady={onPointsReady as any}
-            clipPlanes={threeClipPlanes}
-            splatMode={splatMode}
-            streamBuffer={streamBuffer || undefined}
-            streamAppend={streamAppend}
-          />
-        ) : (
-          <ModelLoader
-            url={(viewMode === 'mesh' || viewMode === 'wireframe') && meshAvailable ? getMeshUrl(jobId) : getResultUrl(jobId)}
-            pointSize={pointSize}
-            opacity={opacity}
-            onPointsReady={onPointsReady as any}
-            onMeshReady={onMeshReady as any}
-            onCameraPositions={handleCameras}
-            clipPlanes={threeClipPlanes}
-            splatMode={splatMode}
-            viewMode={viewMode}
-          />
-        )}
+        <ModelLoader
+          url={(viewMode === 'mesh' || viewMode === 'wireframe') && meshAvailable ? getMeshUrl(jobId) : getResultUrl(jobId)}
+          pointSize={pointSize}
+          opacity={opacity}
+          onPointsReady={onPointsReady as any}
+          onMeshReady={onMeshReady as any}
+          onCameraPositions={handleCameras}
+          clipPlanes={threeClipPlanes}
+          splatMode={splatMode}
+          viewMode={viewMode}
+        />
       </Suspense>
 
       {camPositions && showTrajectory && <CameraTrail positions={camPositions} />}
