@@ -92,7 +92,7 @@ export default function CrossSectionView({ positions, colors }: Props) {
         {/* Mini canvas */}
         <div style={{ width: 200, height: 160 }}>
           {bbox && filtered && filtered.pos.length > 0 ? (
-            <Canvas orthographic camera={{ position: camPos, up: camUp, zoom: 35, near: 0.001, far: 500 }}>
+            <Canvas orthographic camera={{ position: camPos, up: camUp, zoom: 35, near: 0.001, far: 500 }} frameloop="demand">
               <ambientLight intensity={1.2} />
               <SlicePoints positions={filtered.pos} colors={filtered.col} extent={extent} />
               <OrbitControls
