@@ -308,9 +308,11 @@ export default function ViewerPage() {
     <div className="h-[calc(100vh-2.5rem)] flex">
       {/* Left Panel */}
       <div className="w-64 flex-shrink-0 border-r border-gray-800 bg-gray-950 flex flex-col overflow-hidden">
-        <div className="p-3 border-b border-gray-800">
+        <div className="p-3 border-b border-gray-800 flex-shrink-0">
           <div className="text-xs text-gray-500 mb-2">原始视频</div>
-          <video src={`/api/v1/gpu/video/${jobId}`} controls className="w-full rounded bg-black" preload="metadata" />
+          <div className="w-full aspect-video bg-black rounded overflow-hidden">
+            <video src={`/api/v1/gpu/video/${jobId}`} controls className="w-full h-full object-contain" preload="metadata" />
+          </div>
         </div>
         <div className="p-3 flex-1 overflow-auto">
           <div className="text-xs text-gray-500 mb-3">处理进度</div>
@@ -369,10 +371,7 @@ export default function ViewerPage() {
               viewMode={viewMode as any}
               meshAvailable={meshAvailable}
             />
-            {(job as any).status !== 'processing' && (
-            <>
             <CrossSectionView positions={rawSectionData?.pos ?? null} colors={rawSectionData?.col ?? null} />
-            {/* Top-center display mode bar */}
             <DisplayModeBar viewMode={viewMode} setViewMode={setViewMode} meshAvailable={meshAvailable} />
             <ControlsPanel
               pointSize={pointSize} setPointSize={setPointSize}
@@ -395,8 +394,6 @@ export default function ViewerPage() {
               edlStrength={edlStrength} setEdlStrength={setEdlStrength}
               showTrajectory={showTrajectory} setShowTrajectory={setShowTrajectory}
             />
-            </>
-            )}
           </>
         ):job.status==='failed'?(
           <div className="absolute inset-0 flex items-center justify-center text-gray-500"><div className="text-center"><div className="text-4xl mb-3">!</div><p>处理失败</p></div></div>
