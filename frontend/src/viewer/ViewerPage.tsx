@@ -126,18 +126,20 @@ export default function ViewerPage() {
   const [rawSectionData, setRawSectionData] = useState<{ pos: Float32Array; col: Float32Array } | null>(null);
   const [canvasEl, setCanvasEl] = useState<HTMLCanvasElement | null>(null);
   const [meshAvailable, setMeshAvailable] = useState(false);
+  const sceneCamRef = useRef<THREE.Camera | null>(null);
 
   // Measure click
   useEffect(() => {
-    if (!measureMode || !canvasEl || !pointsRef.current) return;
+    if (!measureMode || !canvasEl || !pointsRef.current || !sceneCamRef.current) return;
     const h = (e: MouseEvent) => {
       if (e.button !== 0) return;
+      if (!sceneCamRef.current || !pointsRef.current || !canvasEl) return;
       const r = canvasEl.getBoundingClientRect();
       const m = new THREE.Vector2(((e.clientX-r.left)/r.width)*2-1, -((e.clientY-r.top)/r.height)*2+1);
       const rc = new THREE.Raycaster();
       rc.params.Points!.threshold = 0.05;
-      rc.setFromCamera(m, new THREE.PerspectiveCamera(50, r.width/r.height, 0.1, 100));
-      const hits = rc.intersectObject(pointsRef.current!);
+      rc.setFromCamera(m, sceneCamRef.current);
+      const hits = rc.intersectObject(pointsRef.current);
       if (hits.length > 0) {
         measurePtsRef.current.push(hits[0].point.clone());
         if (measurePtsRef.current.length >= 2) {
@@ -157,15 +159,16 @@ export default function ViewerPage() {
 
   // Orient mode click — collect 3 ground plane points
   useEffect(() => {
-    if (!orientMode || !canvasEl || !pointsRef.current) return;
+    if (!orientMode || !canvasEl || !pointsRef.current || !sceneCamRef.current) return;
     const h = (e: MouseEvent) => {
       if (e.button !== 0) return;
+      if (!sceneCamRef.current || !pointsRef.current || !canvasEl) return;
       const r = canvasEl.getBoundingClientRect();
       const m = new THREE.Vector2(((e.clientX-r.left)/r.width)*2-1, -((e.clientY-r.top)/r.height)*2+1);
       const rc = new THREE.Raycaster();
       rc.params.Points!.threshold = 0.05;
-      rc.setFromCamera(m, new THREE.PerspectiveCamera(50, r.width/r.height, 0.1, 100));
-      const hits = rc.intersectObject(pointsRef.current!);
+      rc.setFromCamera(m, sceneCamRef.current);
+      const hits = rc.intersectObject(pointsRef.current);
       if (hits.length > 0) {
         const pt = hits[0].point.clone();
         const arr = [...orientPtsRef.current, pt];
@@ -572,6 +575,7 @@ export default function ViewerPage() {
               onUpdateClip={setBoxClip}
               lassoEnabled={lassoEnabled}
               annotations={annotations}
+              onCameraRef={(cam) => { sceneCamRef.current = cam; }}
             />
             </ErrorBoundary>
             <KeyboardHint />

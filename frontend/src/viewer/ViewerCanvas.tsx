@@ -29,6 +29,7 @@ interface Props {
   onUpdateClip?: (clip: BoxClip) => void;
   lassoEnabled?: boolean;
   annotations?: { id: number; p1: THREE.Vector3; p2: THREE.Vector3; label: string }[];
+  onCameraRef?: (cam: THREE.Camera) => void;
 }
 
 function LassoOverlay({ enabled }: { enabled: boolean }) {
@@ -369,37 +370,29 @@ function KeyboardFly() {
 
   useFrame(({ camera }) => {
     const k = keys.current;
-    // Skip if any modifier held (e.g. user typing in a text field)
     if (k['Control'] || k['Alt'] || k['Meta']) return;
 
-    // Camera world-space basis
-    const target = new THREE.Vector3(0, 0, 0); // TrackballControls always targets origin
+    const target = new THREE.Vector3(0, 0, 0);
     const forward = new THREE.Vector3().subVectors(target, camera.position).normalize();
     const worldUp = new THREE.Vector3(0, 1, 0);
     const right = new THREE.Vector3().crossVectors(forward, worldUp).normalize();
     const up = new THREE.Vector3().crossVectors(right, forward).normalize();
 
     const dist = camera.position.length();
-    // Base speed: 0.5% of distance per frame at 60fps (≈ 30% of distance per second)
     const moveSpeed = Math.max(0.04, dist * 0.005);
-    // Rotation speed: ~2 degrees per keypress at 60fps
     const rotSpeed = 0.03;
 
     const delta = new THREE.Vector3();
 
-    // WASD / Arrow keys: move camera in world-local space
     if (k['w'] || k['W'] || k['ArrowUp'])    delta.add(forward.clone().multiplyScalar( moveSpeed));
     if (k['s'] || k['S'] || k['ArrowDown'])  delta.add(forward.clone().multiplyScalar(-moveSpeed));
     if (k['a'] || k['A'] || k['ArrowLeft'])  delta.add(right.clone().multiplyScalar(-moveSpeed));
     if (k['d'] || k['D'] || k['ArrowRight']) delta.add(right.clone().multiplyScalar( moveSpeed));
-
-    // Space / Shift: vertical movement along camera's local up
     if (k[' ']) delta.add(up.clone().multiplyScalar(moveSpeed));
     if (k['Shift']) delta.add(up.clone().multiplyScalar(-moveSpeed));
 
     camera.position.add(delta);
 
-    // Q / E: yaw left/right around the target
     if (k['q'] || k['Q']) {
       const q = new THREE.Quaternion().setFromAxisAngle(worldUp, rotSpeed);
       camera.position.sub(target).applyQuaternion(q).add(target);
@@ -474,13 +467,22 @@ export default function ViewerCanvas({
   boxClip, showAxes, orthographic, splatMode, showGrid, showTrajectory = true,
   edlStrength = 0.4, orbitTarget = [0, 0, 0], viewMode = 'points', meshAvailable = false,
   orientMarkers = null, orientPlane = null, onUpdateClip,
-  lassoEnabled = false, annotations = [],
+  lassoEnabled = false, annotations = [], onCameraRef,
 }: Props) {
   const [camPositions, setCamPositions] = useState<Float32Array | null>(null);
   const defaultBox: BoxClip = boxClip || { enabled: false, min: [-1, -0.5, -1], max: [1, 0.5, 1] };
   const activeBox = boxClip || defaultBox;
 
   const handleCameras = useCallback((pos: Float32Array) => setCamPositions(pos), []);
+
+  // Capture camera ref for ViewerPage raycasting
+  const camHolderRef = useRef<THREE.Camera | null>(null);
+  useFrame(({ camera }) => {
+    if (camHolderRef.current !== camera) {
+      camHolderRef.current = camera;
+      onCameraRef?.(camera);
+    }
+  });
 
   const threeClipPlanes: THREE.Plane[] = [];
   if (activeBox.enabled) {
@@ -496,7 +498,7 @@ export default function ViewerCanvas({
     <Canvas
       className="!absolute inset-0"
       gl={{ preserveDrawingBuffer: true, antialias: false, localClippingEnabled: true }}
-      frameloop="demand"
+      frameloop="always"
       style={{ background: '#0a0a0f' }}
     >
       <PerspectiveCamera makeDefault={!orthographic} position={[2, 1, 3]} fov={50} near={0.01} far={200} />
