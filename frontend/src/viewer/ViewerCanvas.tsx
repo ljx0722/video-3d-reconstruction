@@ -179,7 +179,7 @@ function KeyboardFly() {
 
     const dist = camera.position.length();
     // Base speed: 0.5% of distance per frame at 60fps (≈ 30% of distance per second)
-    const moveSpeed = Math.max(0.01, dist * 0.005);
+    const moveSpeed = Math.max(0.04, dist * 0.005);
     // Rotation speed: ~2 degrees per keypress at 60fps
     const rotSpeed = 0.03;
 
