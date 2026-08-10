@@ -86,7 +86,6 @@ export default function ViewerPage() {
   const [rawSectionData, setRawSectionData] = useState<{ pos: Float32Array; col: Float32Array } | null>(null);
   const [canvasEl, setCanvasEl] = useState<HTMLCanvasElement | null>(null);
   const [meshAvailable, setMeshAvailable] = useState(false);
-  const [gaussianData, setGaussianData] = useState<{ pos: Float32Array; col: Float32Array } | null>(null);
 
   // Measure click
   useEffect(() => {
@@ -235,7 +234,6 @@ export default function ViewerPage() {
         setRawSectionData({ pos: posCopy, col: colCopy });
         setOriginalCount(pos.count);
         setPointCount(pos.count);
-        setGaussianData({ pos: posCopy, col: colCopy });
 
         // Compute bounding box center for orbit target
         let mx = Infinity, Mx = -Infinity, my = Infinity, My = -Infinity, mz = Infinity, Mz = -Infinity;
@@ -492,7 +490,6 @@ export default function ViewerPage() {
               onUpdateClip={setBoxClip}
               lassoEnabled={lassoEnabled}
               annotations={annotations}
-              gaussianData={gaussianData}
             />
             <KeyboardHint />
             <CrossSectionView positions={rawSectionData?.pos ?? null} colors={rawSectionData?.col ?? null} />
