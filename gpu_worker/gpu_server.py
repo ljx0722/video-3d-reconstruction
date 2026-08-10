@@ -124,26 +124,24 @@ def process_video(video_path: str, settings: dict, job_id: str):
     # max_target: frames fed to GPU (capped at ~500 to stay under 24GB VRAM)
     # max_keyframes: frames kept in final GLB after temporal subsampling
     # conf_pct: confidence percentile cutoff (0=keep all, 10=drop bottom 10%)
+    # max_keyframes: strict cap on GLB frames to keep file size manageable
 
     if video_duration < 10:
-        # Very short clip — full resolution, keep everything
-        max_target, stride, max_keyframes, conf_pct = 300, 1, 200, 0
+        max_target, stride, max_keyframes, conf_pct = 300, 1, 60, 0
     elif video_duration < 20:
-        max_target, stride, max_keyframes, conf_pct = 400, 1, 250, 0
+        max_target, stride, max_keyframes, conf_pct = 400, 1, 80, 3
     elif video_duration < 30:
-        max_target, stride, max_keyframes, conf_pct = 450, 1, 300, 3
+        max_target, stride, max_keyframes, conf_pct = 450, 1, 100, 5
     elif video_duration < 45:
-        # Medium — stride 2 for GLB size, but generous keyframes
-        max_target, stride, max_keyframes, conf_pct = 500, 2, 200, 5
+        max_target, stride, max_keyframes, conf_pct = 500, 2, 80, 8
     elif video_duration < 60:
-        max_target, stride, max_keyframes, conf_pct = 500, 2, 250, 5
+        max_target, stride, max_keyframes, conf_pct = 500, 2, 100, 8
     elif video_duration < 90:
-        max_target, stride, max_keyframes, conf_pct = 550, 2, 300, 5
+        max_target, stride, max_keyframes, conf_pct = 550, 2, 120, 10
     elif video_duration < 150:
-        max_target, stride, max_keyframes, conf_pct = 600, 2, 350, 8
+        max_target, stride, max_keyframes, conf_pct = 600, 2, 150, 12
     else:
-        # Very long scene — lower spatial res but maximal temporal coverage
-        max_target, stride, max_keyframes, conf_pct = 600, 2, 400, 8
+        max_target, stride, max_keyframes, conf_pct = 600, 2, 180, 12
 
     desired_fps = fps
     interval = max(1, round(src_fps / desired_fps))
@@ -349,7 +347,7 @@ def process_video(video_path: str, settings: dict, job_id: str):
     # Temporally subsample to max_keyframes
     num_frames_full = vis_pred_sub.get("depth", vis_pred.get("depth", np.zeros(1))).shape[0]
     if num_frames_full > max_kf:
-        kf_step = max(1, num_frames_full // max_kf)
+        kf_step = max(2, int(np.ceil(num_frames_full / max_kf)))
         for key in list(vis_pred_sub.keys()):
             v = vis_pred_sub[key]
             if isinstance(v, np.ndarray) and v.ndim >= 3 and v.shape[0] == num_frames_full:
