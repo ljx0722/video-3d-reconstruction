@@ -1,4 +1,4 @@
-import { Suspense, useState, useCallback, useRef } from 'react';
+import { Suspense, useState, useCallback, useRef, useEffect } from 'react';
 import { Canvas, useFrame } from '@react-three/fiber';
 import { TrackballControls, GizmoHelper, GizmoViewport, Grid, Html, Line, OrthographicCamera, PerspectiveCamera } from '@react-three/drei';
 import * as THREE from 'three';
@@ -154,6 +154,63 @@ function OrientMarkers({ markers, plane }: { markers: THREE.Vector3[] | null; pl
   );
 }
 
+function KeyboardFly() {
+  const keys = useRef<Record<string, boolean>>({});
+
+  useEffect(() => {
+    const onDown = (e: KeyboardEvent) => { keys.current[e.key] = true; };
+    const onUp   = (e: KeyboardEvent) => { keys.current[e.key] = false; };
+    window.addEventListener('keydown', onDown);
+    window.addEventListener('keyup', onUp);
+    return () => { window.removeEventListener('keydown', onDown); window.removeEventListener('keyup', onUp); };
+  }, []);
+
+  useFrame(({ camera }) => {
+    const k = keys.current;
+    // Skip if any modifier held (e.g. user typing in a text field)
+    if (k['Control'] || k['Alt'] || k['Meta']) return;
+
+    // Camera world-space basis
+    const target = new THREE.Vector3(0, 0, 0); // TrackballControls always targets origin
+    const forward = new THREE.Vector3().subVectors(target, camera.position).normalize();
+    const worldUp = new THREE.Vector3(0, 1, 0);
+    const right = new THREE.Vector3().crossVectors(forward, worldUp).normalize();
+    const up = new THREE.Vector3().crossVectors(right, forward).normalize();
+
+    const dist = camera.position.length();
+    // Base speed: 0.5% of distance per frame at 60fps (≈ 30% of distance per second)
+    const moveSpeed = Math.max(0.01, dist * 0.005);
+    // Rotation speed: ~2 degrees per keypress at 60fps
+    const rotSpeed = 0.03;
+
+    const delta = new THREE.Vector3();
+
+    // WASD / Arrow keys: move camera in world-local space
+    if (k['w'] || k['W'] || k['ArrowUp'])    delta.add(forward.clone().multiplyScalar( moveSpeed));
+    if (k['s'] || k['S'] || k['ArrowDown'])  delta.add(forward.clone().multiplyScalar(-moveSpeed));
+    if (k['a'] || k['A'] || k['ArrowLeft'])  delta.add(right.clone().multiplyScalar(-moveSpeed));
+    if (k['d'] || k['D'] || k['ArrowRight']) delta.add(right.clone().multiplyScalar( moveSpeed));
+
+    // Space / Shift: vertical movement along camera's local up
+    if (k[' ']) delta.add(up.clone().multiplyScalar(moveSpeed));
+    if (k['Shift']) delta.add(up.clone().multiplyScalar(-moveSpeed));
+
+    camera.position.add(delta);
+
+    // Q / E: yaw left/right around the target
+    if (k['q'] || k['Q']) {
+      const q = new THREE.Quaternion().setFromAxisAngle(worldUp, rotSpeed);
+      camera.position.sub(target).applyQuaternion(q).add(target);
+    }
+    if (k['e'] || k['E']) {
+      const q = new THREE.Quaternion().setFromAxisAngle(worldUp, -rotSpeed);
+      camera.position.sub(target).applyQuaternion(q).add(target);
+    }
+  });
+
+  return null;
+}
+
 function AxesHelper3D() {
   return (
     <group>
@@ -226,6 +283,8 @@ export default function ViewerCanvas({
       </GizmoHelper>
 
       <AdaptiveControls target={orbitTarget} />
+
+      <KeyboardFly />
 
       <OrientMarkers markers={orientMarkers} plane={orientPlane} />
 

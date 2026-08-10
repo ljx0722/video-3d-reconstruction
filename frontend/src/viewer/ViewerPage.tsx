@@ -448,6 +448,7 @@ export default function ViewerPage() {
               orientMarkers={orientMarkers}
               orientPlane={orientPlane}
             />
+            <KeyboardHint />
             <CrossSectionView positions={rawSectionData?.pos ?? null} colors={rawSectionData?.col ?? null} />
             <DisplayModeBar viewMode={viewMode} setViewMode={setViewMode} meshAvailable={meshAvailable} />
             <ControlsPanel
@@ -482,6 +483,27 @@ export default function ViewerPage() {
         ):(
           <div className="absolute inset-0 flex items-center justify-center"><div className="text-center"><div className="w-16 h-16 mx-auto mb-4 border-4 border-blue-500 border-t-transparent rounded-full animate-spin" /><p className="text-gray-400 text-sm">正在重建三维模型...</p></div></div>
         )}
+      </div>
+    </div>
+  );
+}
+
+function KeyboardHint() {
+  const [visible, setVisible] = useState(true);
+  useEffect(() => {
+    const t = setTimeout(() => setVisible(false), 12000);
+    const h = (e: KeyboardEvent) => { if (['w','a','s','d','q','e','ArrowUp','ArrowDown','ArrowLeft','ArrowRight',' '].includes(e.key)) setVisible(false); };
+    window.addEventListener('keydown', h, { once: true });
+    return () => { clearTimeout(t); window.removeEventListener('keydown', h); };
+  }, []);
+  if (!visible) return null;
+  return (
+    <div className="absolute bottom-8 left-1/2 -translate-x-1/2 z-10 pointer-events-none">
+      <div className="bg-gray-900/85 backdrop-blur rounded-lg px-4 py-2.5 text-[10px] text-gray-400 border border-gray-700 flex gap-4 transition-opacity duration-500" style={{ opacity: visible ? 1 : 0 }}>
+        <span><kbd className="px-1 py-0.5 rounded bg-gray-800 text-gray-300 text-[9px] font-mono">W</kbd><kbd className="px-1 py-0.5 rounded bg-gray-800 text-gray-300 text-[9px] font-mono ml-0.5">S</kbd> 前后</span>
+        <span><kbd className="px-1 py-0.5 rounded bg-gray-800 text-gray-300 text-[9px] font-mono">A</kbd><kbd className="px-1 py-0.5 rounded bg-gray-800 text-gray-300 text-[9px] font-mono ml-0.5">D</kbd> 左右</span>
+        <span><kbd className="px-1 py-0.5 rounded bg-gray-800 text-gray-300 text-[9px] font-mono">Space</kbd> 上升 · <kbd className="px-1 py-0.5 rounded bg-gray-800 text-gray-300 text-[9px] font-mono">Shift</kbd> 下降</span>
+        <span><kbd className="px-1 py-0.5 rounded bg-gray-800 text-gray-300 text-[9px] font-mono">Q</kbd><kbd className="px-1 py-0.5 rounded bg-gray-800 text-gray-300 text-[9px] font-mono ml-0.5">E</kbd> 旋转</span>
       </div>
     </div>
   );
