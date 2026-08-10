@@ -65,6 +65,17 @@ export default function ControlsPanel(p: CtrlProps) {
           className="bg-gray-900/80 backdrop-blur rounded-lg px-2.5 py-1.5 text-xs text-gray-400 border border-gray-800 hover:bg-gray-800" title="截图">
           📷
         </button>
+        {(p.setOrientMode || p.onCancelOrient) && (
+        <button onClick={() => {
+          if (p.orientPlane) { if (p.onCancelOrient) p.onCancelOrient(); }
+          else if (p.setOrientMode) p.setOrientMode(!p.orientMode);
+          else if (p.onCancelOrient) p.onCancelOrient();
+        }}
+          className={`bg-gray-900/80 backdrop-blur rounded-lg px-2.5 py-1.5 text-xs border hover:bg-gray-800
+            ${(p.orientMode || p.orientPlane) ? 'text-blue-400 border-blue-500/30' : 'text-gray-400 border-gray-800'}`} title="方向校正">
+          {(p.orientMode || p.orientPlane) ? '⟴ 定向中' : '⟴ 定向'}
+        </button>
+        )}
       </div>
 
       {/* Right-side circular controls */}

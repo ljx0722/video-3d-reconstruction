@@ -1,5 +1,5 @@
 import { Suspense, useState, useCallback, useRef, useEffect } from 'react';
-import { Canvas, useFrame } from '@react-three/fiber';
+import { Canvas, useFrame, useThree } from '@react-three/fiber';
 import { TrackballControls, GizmoHelper, GizmoViewport, Grid, Html, Line, OrthographicCamera, PerspectiveCamera } from '@react-three/drei';
 import * as THREE from 'three';
 import { getResultUrl, getMeshUrl } from '../api/client';
@@ -25,23 +25,92 @@ interface Props {
   meshAvailable?: boolean;
   orientMarkers?: THREE.Vector3[] | null;
   orientPlane?: { normal: THREE.Vector3; center: THREE.Vector3 } | null;
+  onUpdateClip?: (clip: BoxClip) => void;
 }
 
-function BoxWireframe({ boxClip }: { boxClip: BoxClip }) {
+function ClipBox({ boxClip, onUpdate }: { boxClip: BoxClip; onUpdate?: (c: BoxClip) => void }) {
   if (!boxClip.enabled) return null;
-  const size: [number,number,number] = [
-    boxClip.max[0]-boxClip.min[0], boxClip.max[1]-boxClip.min[1], boxClip.max[2]-boxClip.min[2],
+  const { camera, size, gl } = useThree();
+  const dragRef = useRef<{ idx: number; sign: 1 | -1 } | null>(null);
+  const handleRefs = useRef<THREE.Mesh[]>([]);
+  const [mx, my, mz] = boxClip.min; const [Mx, My, Mz] = boxClip.max;
+  const ctr: [number, number, number] = [(mx + Mx) / 2, (my + My) / 2, (mz + Mz) / 2];
+  const sz: [number, number, number] = [Mx - mx, My - my, Mz - mz];
+  const hScale = Math.max(sz[0], sz[1], sz[2], 0.1) * 0.04;
+
+  const handles = [
+    { idx: 0, sign:  1 as const, pos: [Mx, ctr[1], ctr[2]] as [number, number, number], col: '#ef4444' },
+    { idx: 0, sign: -1 as const, pos: [mx, ctr[1], ctr[2]] as [number, number, number], col: '#ef4444' },
+    { idx: 1, sign:  1 as const, pos: [ctr[0], My, ctr[2]] as [number, number, number], col: '#22c55e' },
+    { idx: 1, sign: -1 as const, pos: [ctr[0], my, ctr[2]] as [number, number, number], col: '#22c55e' },
+    { idx: 2, sign:  1 as const, pos: [ctr[0], ctr[1], Mz] as [number, number, number], col: '#3b82f6' },
+    { idx: 2, sign: -1 as const, pos: [ctr[0], ctr[1], mz] as [number, number, number], col: '#3b82f6' },
   ];
-  const center: [number,number,number] = [
-    (boxClip.max[0]+boxClip.min[0])/2, (boxClip.max[1]+boxClip.min[1])/2, (boxClip.max[2]+boxClip.min[2])/2,
-  ];
-  const geom = new THREE.BoxGeometry(size[0], size[1], size[2]);
-  geom.translate(center[0], center[1], center[2]);
+
+  useEffect(() => {
+    const el = gl.domElement;
+    const rc = new THREE.Raycaster();
+    const mouse = new THREE.Vector2();
+
+    const onDown = (e: PointerEvent) => {
+      mouse.x = (e.offsetX / size.width) * 2 - 1;
+      mouse.y = -(e.offsetY / size.height) * 2 + 1;
+      rc.setFromCamera(mouse, camera);
+      const targets = handleRefs.current.filter(Boolean);
+      const hits = rc.intersectObjects(targets, false);
+      if (hits.length > 0) {
+        const i = targets.indexOf(hits[0].object as THREE.Mesh);
+        if (i >= 0) { dragRef.current = { idx: handles[i].idx, sign: handles[i].sign }; e.stopPropagation(); }
+      }
+    };
+    const onMove = (e: PointerEvent) => {
+      if (!dragRef.current) return;
+      const dr = dragRef.current;
+      mouse.x = (e.offsetX / size.width) * 2 - 1;
+      mouse.y = -(e.offsetY / size.height) * 2 + 1;
+      rc.setFromCamera(mouse, camera);
+      const axisVec = new THREE.Vector3(); axisVec.setComponent(dr.idx, 1);
+      const perpPlane = new THREE.Plane(axisVec, 0);
+      const pt = new THREE.Vector3();
+      if (!rc.ray.intersectPlane(perpPlane, pt) || !onUpdate) return;
+      const val = pt.getComponent(dr.idx);
+      const key = dr.sign > 0 ? 'max' : 'min';
+      const other = dr.sign > 0 ? 'min' : 'max';
+      const arr = [...boxClip[key]] as [number, number, number];
+      arr[dr.idx] = Number(val.toFixed(4));
+      // Clamp to avoid flipping faces
+      if (dr.sign > 0) arr[dr.idx] = Math.max(arr[dr.idx], boxClip[other][dr.idx] + 0.001);
+      else arr[dr.idx] = Math.min(arr[dr.idx], boxClip[other][dr.idx] - 0.001);
+      onUpdate({ ...boxClip, [key]: arr });
+    };
+    const onUp = () => { dragRef.current = null; };
+
+    el.addEventListener('pointerdown', onDown);
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', onUp);
+    return () => {
+      el.removeEventListener('pointerdown', onDown);
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerup', onUp);
+    };
+  }, [camera, size, boxClip, onUpdate, gl, handles]);
+
+  const geom = new THREE.BoxGeometry(sz[0], sz[1], sz[2]);
+  geom.translate(ctr[0], ctr[1], ctr[2]);
+
   return (
-    <lineSegments>
-      <edgesGeometry args={[geom]} />
-      <lineBasicMaterial color="#22c55e" transparent opacity={0.7} depthTest={true} />
-    </lineSegments>
+    <group>
+      <lineSegments>
+        <edgesGeometry args={[geom]} />
+        <lineBasicMaterial color="#22c55e" transparent opacity={0.7} depthTest={true} />
+      </lineSegments>
+      {handles.map((h, i) => (
+        <mesh key={i} ref={el => { if (el) handleRefs.current[i] = el; }} position={h.pos}>
+          <boxGeometry args={[hScale, hScale, hScale]} />
+          <meshBasicMaterial color={h.col} />
+        </mesh>
+      ))}
+    </group>
   );
 }
 
@@ -225,7 +294,7 @@ export default function ViewerCanvas({
   jobId, pointSize, opacity = 1, onPointsReady, onMeshReady,
   boxClip, showAxes, orthographic, splatMode, showGrid, showTrajectory = true,
   edlStrength = 0.4, orbitTarget = [0, 0, 0], viewMode = 'points', meshAvailable = false,
-  orientMarkers = null, orientPlane = null,
+  orientMarkers = null, orientPlane = null, onUpdateClip,
 }: Props) {
   const [camPositions, setCamPositions] = useState<Float32Array | null>(null);
   const defaultBox: BoxClip = boxClip || { enabled: false, min: [-1, -0.5, -1], max: [1, 0.5, 1] };
@@ -272,7 +341,7 @@ export default function ViewerCanvas({
 
       {camPositions && showTrajectory && <CameraTrail positions={camPositions} />}
 
-      <BoxWireframe boxClip={activeBox} />
+      <ClipBox boxClip={activeBox} onUpdate={onUpdateClip} />
 
       {showGrid && <Grid infiniteGrid fadeDistance={50} fadeStrength={5} sectionSize={1} cellSize={0.5} sectionColor="#374151" cellColor="#1f2937" />}
 

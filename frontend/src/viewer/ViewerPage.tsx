@@ -447,6 +447,7 @@ export default function ViewerPage() {
               meshAvailable={meshAvailable}
               orientMarkers={orientMarkers}
               orientPlane={orientPlane}
+              onUpdateClip={setBoxClip}
             />
             <KeyboardHint />
             <CrossSectionView positions={rawSectionData?.pos ?? null} colors={rawSectionData?.col ?? null} />
