@@ -574,22 +574,27 @@ def _build_mesh(vis_pred: dict, conf_pct: float, tmpdir: str) -> bytes | None:
         if rgb_flat is not None:
             pcd.colors = o3d.utility.Vector3dVector(np.clip(rgb_flat, 0, 1))
 
-        # ── Downsample ──────────────────────────────────────────────────
+        # ── Downsample (more aggressive for speed) ────────────────────
         bbox_diag = np.linalg.norm(pcd.get_max_bound() - pcd.get_min_bound())
-        voxel_size = max(0.005, bbox_diag * 0.003)
+        voxel_size = max(0.01, bbox_diag * 0.005)  # rougher, faster
         pcd = pcd.voxel_down_sample(voxel_size)
         logger.info(f"Mesh downsample: {len(pcd.points)} pts (voxel={voxel_size:.4f})")
 
         if len(pcd.points) < 100:
             return None
 
-        # ── Normal estimation ───────────────────────────────────────────
+        # ── Normal estimation (faster tangent plane) ───────────────────
         radius = max(voxel_size * 3, bbox_diag * 0.01)
-        pcd.estimate_normals(o3d.geometry.KDTreeSearchParamHybrid(radius=radius, max_nn=30))
-        pcd.orient_normals_towards_camera_location()
+        logger.info(f"Mesh normals: {len(pcd.points)} pts, radius={radius:.4f}")
+        pcd.estimate_normals(o3d.geometry.KDTreeSearchParamHybrid(radius=radius, max_nn=20))
+        try:
+            pcd.orient_normals_consistent_tangent_plane(k=20)
+        except Exception:
+            pass  # tangent plane orientation fails on sparse data, skip
 
-        # ── Poisson reconstruction ──────────────────────────────────────
-        depth = 8 if len(pcd.points) < 200000 else 9
+        # ── Poisson reconstruction (faster depth) ──────────────────────
+        depth = 7 if len(pcd.points) < 150000 else 8
+        logger.info(f"Mesh Poisson depth={depth}...")
         mesh, densities = o3d.geometry.TriangleMesh.create_from_point_cloud_poisson(pcd, depth=depth)
 
         # Remove low-density triangles (bottom 5%)
