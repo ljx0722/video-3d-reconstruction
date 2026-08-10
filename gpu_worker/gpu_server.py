@@ -101,6 +101,8 @@ def process_video(video_path: str, settings: dict, job_id: str):
 
     load_model()
 
+    t_start = time.time()
+
     fps = settings.get("fps", 10)
     mode = settings.get("mode", "streaming")
 
@@ -361,6 +363,12 @@ def process_video(video_path: str, settings: dict, job_id: str):
     with open(glb_path, "rb") as f:
         glb_data = f.read()
 
+    # Count points for reporting
+    total_pts = 0
+    for name in scene.geometry:
+        if hasattr(scene.geometry[name], 'vertices'):
+            total_pts += scene.geometry[name].vertices.shape[0]
+
     # ── Mesh reconstruction (Open3D Poisson) ───────────────────────────
     mesh_data = _build_mesh(vis_pred_sub, conf_pct_val, tmpdir)
 
@@ -368,7 +376,12 @@ def process_video(video_path: str, settings: dict, job_id: str):
     _shutil.rmtree(tmpdir, ignore_errors=True)
 
     size_mb = len(glb_data) / (1024 * 1024)
-    logger.info(f"GLB exported: {size_mb:.1f} MB, {num_frames} frames, elapsed={elapsed:.1f}s")
+    total_elapsed = time.time() - t_start
+    logger.info(f"GLB exported: {size_mb:.1f} MB, {num_frames} frames, elapsed={elapsed:.1f}s (total={total_elapsed:.0f}s)")
+
+    settings["_num_frames"] = num_frames
+    settings["_total_elapsed"] = total_elapsed
+    settings["_num_points"] = total_pts
 
     return glb_data, mesh_data
 
@@ -436,8 +449,11 @@ def poll_and_process():
                     _update_status(job_id, "processing", 0.95, "上传Mesh模型...")
                     _upload_mesh(job_id, mesh_data)
 
-                # Final stream status
-                _update_status(job_id, "completed", 1.0)
+                # Final stream status with stats
+                nf = settings.get("_num_frames", 0)
+                te = settings.get("_total_elapsed", 0)
+                np_pts = settings.get("_num_points", 0)
+                _update_status(job_id, "completed", 1.0, num_frames=nf, processing_time_secs=te, num_points=np_pts)
 
                 logger.info(f"Job {job_id} completed ({len(glb_data)/1024/1024:.1f} MB, mesh {len(mesh_data)/1024/1024:.1f} MB)" if mesh_data else f"Job {job_id} completed ({len(glb_data)/1024/1024:.1f} MB)")
 
@@ -468,8 +484,12 @@ def poll_and_process():
         time.sleep(POLL_INTERVAL)
 
 
-def _update_status(job_id: str, status: str, progress: float, detail: str = ""):
-    data = json.dumps({"status": status, "progress": progress, "detail": detail, "error_message": ""}).encode()
+def _update_status(job_id: str, status: str, progress: float, detail: str = "",
+                   num_frames: int = 0, num_points: int = 0, processing_time_secs: float = 0):
+    payload = {"status": status, "progress": progress, "detail": detail, "error_message": "",
+               "num_frames": num_frames, "num_points": num_points,
+               "processing_time_secs": processing_time_secs}
+    data = json.dumps(payload).encode()
     req = urllib.request.Request(
         f"{BACKEND_URL}/api/v1/gpu/status/{job_id}",
         data=data,

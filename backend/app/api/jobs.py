@@ -48,6 +48,16 @@ async def upload_job(
         video_path=job_id,
         settings=job_settings.model_dump_json(),
     )
+
+    # Store file metadata in settings so frontend can show file name/size
+    try:
+        s = json.loads(job.settings)
+        s["file_name"] = file.filename
+        s["file_size_bytes"] = len(contents)
+        job.settings = json.dumps(s)
+    except Exception:
+        pass
+
     db.add(job)
     await db.commit()
 
@@ -108,4 +118,6 @@ def _job_to_response(job: Job) -> dict:
         "created_at": job.created_at.isoformat() if job.created_at else None,
         "updated_at": job.updated_at.isoformat() if job.updated_at else None,
         "detail": settings.get("_detail", "") if settings else "",
+        "file_name": settings.get("file_name", "") if settings else "",
+        "file_size_bytes": settings.get("file_size_bytes", 0) if settings else 0,
     }

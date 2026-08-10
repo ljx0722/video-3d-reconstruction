@@ -61,9 +61,15 @@ async def update_status(job_id: str, data: dict = Body(...)):
         if job:
             job.status = data.get("status", job.status)
             job.progress = data.get("progress", job.progress)
-            detail = data.get("detail", "")
             if data.get("error_message"):
                 job.error_message = data["error_message"]
+            if data.get("num_frames"):
+                job.num_frames = data["num_frames"]
+            if data.get("num_points"):
+                job.num_points = data["num_points"]
+            if data.get("processing_time_secs"):
+                job.processing_time_secs = data["processing_time_secs"]
+            detail = data.get("detail", "")
             # Store detail as part of settings (JSON), since Job model has no detail column
             if detail:
                 import json

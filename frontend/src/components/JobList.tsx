@@ -20,6 +20,17 @@ const statusColors: Record<string, string> = {
   failed: 'bg-red-500/20 text-red-400',
 };
 
+function formatBeijingTime(iso: string) {
+  return new Date(iso).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' });
+}
+
+function formatFileSize(bytes: number) {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
+}
+
 export default function JobList() {
   const { data: jobs, error, mutate } = useSWR<Job[]>('jobs', listJobs, { refreshInterval: 3000 });
   const [deleting, setDeleting] = useState<string | null>(null);
@@ -64,10 +75,14 @@ export default function JobList() {
                   {statusMap[job.status] || job.status}
                 </span>
               </div>
-              <div className="text-xs text-gray-500 mt-2">
-                {new Date(job.created_at).toLocaleString('zh-CN')}
-                {job.processing_time_secs && ` · 处理耗时 ${job.processing_time_secs.toFixed(1)} 秒`}
-                {job.num_points && ` · ${(job.num_points / 10000).toFixed(0)} 万点`}
+              <div className="text-xs text-gray-500 mt-2 space-y-0.5">
+                {job.file_name && <p>文件：<span className="text-gray-400">{job.file_name}</span></p>}
+                <p>
+                  {formatBeijingTime(job.created_at)}
+                  {job.file_size_bytes && ` · ${formatFileSize(job.file_size_bytes)}`}
+                  {job.num_points ? ` · ${(job.num_points / 10000).toFixed(1)} 万点` : ''}
+                  {job.processing_time_secs && ` · 耗时 ${job.processing_time_secs.toFixed(0)}s`}
+                </p>
               </div>
             </Link>
             <button

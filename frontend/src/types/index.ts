@@ -16,6 +16,8 @@ export interface Job {
   processing_time_secs: number | null;
   created_at: string;
   updated_at: string;
+  file_name?: string;
+  file_size_bytes?: number;
 }
 
 export interface JobCreateResponse {
