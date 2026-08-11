@@ -451,6 +451,16 @@ function LoadingFallback() {
   );
 }
 
+function CameraRefReporter({ onCameraRef }: { onCameraRef?: (cam: THREE.Camera) => void }) {
+  const camera = useThree(state => state.camera);
+
+  useEffect(() => {
+    onCameraRef?.(camera);
+  }, [camera, onCameraRef]);
+
+  return null;
+}
+
 function AxesHelper3D() {
   return (
     <group>
@@ -474,15 +484,6 @@ export default function ViewerCanvas({
 
   const handleCameras = useCallback((pos: Float32Array) => setCamPositions(pos), []);
 
-  // Capture camera ref for ViewerPage raycasting
-  const camHolderRef = useRef<THREE.Camera | null>(null);
-  useFrame(({ camera }) => {
-    if (camHolderRef.current !== camera) {
-      camHolderRef.current = camera;
-      onCameraRef?.(camera);
-    }
-  });
-
   const threeClipPlanes: THREE.Plane[] = [];
   if (activeBox.enabled) {
     threeClipPlanes.push(new THREE.Plane(new THREE.Vector3( 1,0,0), -activeBox.min[0]));
@@ -502,6 +503,7 @@ export default function ViewerCanvas({
     >
       <PerspectiveCamera makeDefault={!orthographic} position={[2, 1, 3]} fov={50} near={0.01} far={200} />
       <OrthographicCamera makeDefault={orthographic} position={[2, 1, 3]} zoom={80} near={0.01} far={200} />
+      <CameraRefReporter onCameraRef={onCameraRef} />
 
       <ambientLight intensity={0.6} />
       <directionalLight position={[5, 5, 5]} intensity={0.4} />

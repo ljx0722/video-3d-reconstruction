@@ -33,5 +33,11 @@ data/
 # Alembic
 backend/alembic/versions/*.pyc
 
-# GPU Worker cache
+# GPU Worker cache and local operations
 gpu_worker/models/
+setup_gpu*.py
+run_setup*.py
+run_gpu*.py
+fix_gpu.py
+list_model.py
+gpu_setup.sh

@@ -1,5 +1,3 @@
-version: "3.8"
-
 services:
   postgres:
     image: postgres:16-alpine
@@ -40,6 +38,7 @@ services:
       MINIO_ACCESS_KEY: minioadmin
       MINIO_SECRET_KEY: minioadmin
       MINIO_BUCKET: video-3d
+      GPU_SECRET: ${GPU_SECRET:?GPU_SECRET is required}
     depends_on:
       - postgres
       - redis

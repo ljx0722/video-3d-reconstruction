@@ -46,7 +46,7 @@ export default function ViewerPage() {
   const { jobId } = useParams<{ jobId: string }>();
   const { data: job, error: jobError } = useSWR<Job>(
     jobId ? `job-${jobId}` : null, () => getJob(jobId!),
-    { refreshInterval: (data?: Job) => (data?.status === 'completed' || data?.status === 'failed') ? 0 : 2000 });
+    { refreshInterval: (data?: Job) => (data?.status === 'completed' || data?.status === 'partial' || data?.status === 'failed') ? 0 : 2000 });
 
   // Vis
   const [pointSize, setPointSize] = useState(POINT_SIZE);
@@ -103,11 +103,22 @@ export default function ViewerPage() {
   const nextAnnoId = useRef(1);
 
   useEffect(() => {
-    if (!jobId || job?.status !== 'completed') return;
+    if (!jobId) {
+      setMeshAvailable(false);
+      return;
+    }
+    if (typeof job?.mesh_available === 'boolean') {
+      setMeshAvailable(job.mesh_available);
+      return;
+    }
+    if (job?.status !== 'completed' && job?.status !== 'partial') {
+      setMeshAvailable(false);
+      return;
+    }
     fetch(`/files/${jobId}/result_mesh.glb`, { method: 'HEAD' })
-      .then(r => { if (r.ok) setMeshAvailable(true); })
-      .catch(() => {});
-  }, [jobId, job?.status]);
+      .then(r => setMeshAvailable(r.ok))
+      .catch(() => setMeshAvailable(false));
+  }, [jobId, job?.status, job?.mesh_available]);
 
   // Lasso selection listener
   useEffect(() => {
@@ -495,9 +506,10 @@ export default function ViewerPage() {
     if (pointsRef.current && originalData.current) applyColor(colorMode, brightness);
   }, [colorMode, brightness, applyColor]);
 
-  const isProcessing = (job as any)?.status === 'uploaded' || (job as any)?.status === 'processing';
+  const isProcessing = job?.status === 'uploaded' || job?.status === 'processing';
+  const canViewPointCloud = job?.status === 'completed' || job?.status === 'partial' || job?.point_cloud_available === true;
   const progressPct = Math.max(2, Math.min(100, (job?.progress || 0) * 100));
-  const currentStep = (job as any)?.status === 'completed' ? 4 : isProcessing ? (job?.progress||0)>=0.15?2:1 : 0;
+  const currentStep = job?.status === 'completed' ? 4 : job?.status === 'partial' ? 3 : isProcessing ? (job?.progress||0)>=0.15?2:1 : 0;
   const detailText = ((job as any)?.detail || (job as any)?.settings?._detail || '');
 
   if (jobError) return <p className="text-center text-red-400 mt-12">加载作业失败</p>;
@@ -510,7 +522,7 @@ export default function ViewerPage() {
         <div className="p-3 border-b border-gray-800 flex-shrink-0">
           <div className="text-xs text-gray-500 mb-2">原始视频</div>
           <div className="w-full aspect-video bg-black rounded overflow-hidden">
-            <video src={`/api/v1/gpu/video/${jobId}`} controls className="w-full h-full object-contain" preload="metadata" />
+            <video src={`/api/v1/jobs/${jobId}/video`} controls className="w-full h-full object-contain" preload="metadata" />
           </div>
         </div>
         <div className="p-3 flex-1 overflow-auto">
@@ -534,6 +546,7 @@ export default function ViewerPage() {
             </div>
           )}
           {job.status==='completed'&&<div className="mb-4 text-sm text-green-400">&#x2713; 处理完成</div>}
+          {job.status==='partial'&&<div className="mb-4 p-2 bg-amber-500/10 border border-amber-500/20 rounded text-xs text-amber-300">点云已生成，Mesh 不可用：{job.mesh_error || job.error_message || (job as any).detail || '未知错误'}</div>}
           {job.status==='failed'&&<div className="mb-4 p-2 bg-red-500/10 border border-red-500/20 rounded text-xs text-red-400">处理失败: {job.error_message || (job as any).detail || '未知错误'}</div>}
           <div className="space-y-1">
             {statusSteps.map((step,i)=>(
@@ -542,7 +555,7 @@ export default function ViewerPage() {
               </div>
             ))}
           </div>
-          {job.status==='completed'&&(
+          {(job.status==='completed'||job.status==='partial')&&(
             <div className="mt-4 pt-3 border-t border-gray-800 text-xs text-gray-500 space-y-1">
               {job.num_frames&&<p>总帧数：{job.num_frames}</p>}
               {job.num_points&&<p>点云数量：{(job.num_points/10000).toFixed(1)} 万</p>}
@@ -559,7 +572,7 @@ export default function ViewerPage() {
       {/* Main */}
       <div className="flex-1 relative bg-black">
         <div className="absolute inset-0" ref={el=>{if(el){const c=el.querySelector('canvas');if(c&&c!==canvasEl)setCanvasEl(c as HTMLCanvasElement);}}} />
-        {(job.status==='completed')?(
+        {canViewPointCloud?(
           <>
             <ErrorBoundary>
             <ViewerCanvas jobId={job.id} pointSize={pointSize} opacity={opacity}
@@ -580,7 +593,7 @@ export default function ViewerPage() {
             </ErrorBoundary>
             <KeyboardHint />
             <CrossSectionView positions={rawSectionData?.pos ?? null} colors={rawSectionData?.col ?? null} />
-            <DisplayModeBar viewMode={viewMode} setViewMode={setViewMode} meshAvailable={meshAvailable} />
+            <DisplayModeBar viewMode={viewMode} setViewMode={setViewMode} meshAvailable={meshAvailable} meshError={job.mesh_error} />
             <ControlsPanel
               pointSize={pointSize} setPointSize={setPointSize}
               opacity={opacity} setOpacity={setOpacity}
@@ -649,7 +662,7 @@ function KeyboardHint() {
   );
 }
 
-function DisplayModeBar({ viewMode, setViewMode, meshAvailable }: { viewMode: string; setViewMode: (v: string) => void; meshAvailable: boolean }) {
+function DisplayModeBar({ viewMode, setViewMode, meshAvailable, meshError }: { viewMode: string; setViewMode: (v: string) => void; meshAvailable: boolean; meshError?: string | null }) {
   const modes = [
     ['points', '点云'],
     ['gaussian', '高斯溅射'],
@@ -658,7 +671,7 @@ function DisplayModeBar({ viewMode, setViewMode, meshAvailable }: { viewMode: st
   ] as const;
 
   return (
-    <div className="absolute top-3 left-1/2 -translate-x-1/2 z-10">
+    <div className="absolute top-3 left-1/2 -translate-x-1/2 z-10 flex flex-col items-center gap-1.5">
       <div className="bg-gray-900/95 backdrop-blur rounded-full px-1 py-1 flex gap-0.5 border border-gray-800 shadow-xl">
         {modes.map(([k, label]) => (
           <button key={k} onClick={() => setViewMode(k)}
@@ -672,6 +685,11 @@ function DisplayModeBar({ viewMode, setViewMode, meshAvailable }: { viewMode: st
           </button>
         ))}
       </div>
+      {!meshAvailable && meshError && (
+        <div className="max-w-sm rounded border border-amber-500/30 bg-gray-950/95 px-3 py-1 text-center text-[10px] text-amber-300 shadow-lg">
+          Mesh 不可用：{meshError}
+        </div>
+      )}
     </div>
   );
 }

@@ -8,6 +8,7 @@ const statusMap: Record<string, string> = {
   uploaded: '已上传',
   queued: '排队中',
   processing: '处理中',
+  partial: '部分完成',
   completed: '已完成',
   failed: '失败',
 };
@@ -16,6 +17,7 @@ const statusColors: Record<string, string> = {
   uploaded: 'bg-yellow-500/20 text-yellow-400',
   queued: 'bg-blue-500/20 text-blue-400',
   processing: 'bg-purple-500/20 text-purple-400',
+  partial: 'bg-amber-500/20 text-amber-400',
   completed: 'bg-green-500/20 text-green-400',
   failed: 'bg-red-500/20 text-red-400',
 };

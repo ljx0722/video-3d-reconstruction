@@ -6,10 +6,13 @@ export interface JobSettings {
 
 export interface Job {
   id: string;
-  status: 'uploaded' | 'queued' | 'processing' | 'completed' | 'failed';
+  status: 'uploaded' | 'queued' | 'processing' | 'partial' | 'completed' | 'failed';
   progress: number;
   settings: JobSettings;
   result_url: string | null;
+  point_cloud_available?: boolean;
+  mesh_available?: boolean;
+  mesh_error?: string | null;
   error_message: string | null;
   num_frames: number | null;
   num_points: number | null;

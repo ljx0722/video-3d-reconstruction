@@ -81,6 +81,23 @@ async def get_job(job_id: str, db: AsyncSession = Depends(get_db)):
     return _job_to_response(job)
 
 
+@router.get("/jobs/{job_id}/video")
+async def get_job_video(job_id: str, db: AsyncSession = Depends(get_db)):
+    result = await db.execute(select(Job).where(Job.id == job_id))
+    if not result.scalar_one_or_none():
+        raise HTTPException(status_code=404, detail="Job not found")
+    job_dir = os.path.join(storage_service.settings.upload_dir, job_id)
+    candidates = sorted(
+        os.path.join(job_dir, name)
+        for name in os.listdir(job_dir)
+        if name.startswith("video.")
+    ) if os.path.isdir(job_dir) else []
+    if not candidates:
+        raise HTTPException(status_code=404, detail="Video not found")
+    from fastapi.responses import FileResponse
+    return FileResponse(candidates[0], media_type="video/mp4")
+
+
 @router.delete("/jobs/{job_id}")
 async def delete_job(job_id: str, db: AsyncSession = Depends(get_db)):
     result = await db.execute(select(Job).where(Job.id == job_id))
@@ -105,12 +122,19 @@ def _job_to_response(job: Job) -> dict:
             settings = json.loads(job.settings)
         except json.JSONDecodeError:
             pass
+    job_dir = os.path.join(storage_service.settings.upload_dir, job.id)
+    point_cloud_available = os.path.isfile(os.path.join(job_dir, "result.glb"))
+    mesh_available = os.path.isfile(os.path.join(job_dir, "result_mesh.glb"))
+    mesh_error = settings.get("_mesh_error") if settings else None
     return {
         "id": job.id,
         "status": job.status,
         "progress": job.progress,
         "settings": settings,
         "result_url": f"/files/{job.id}/result.glb",
+        "point_cloud_available": point_cloud_available,
+        "mesh_available": mesh_available,
+        "mesh_error": mesh_error,
         "error_message": job.error_message,
         "num_frames": job.num_frames,
         "num_points": job.num_points,

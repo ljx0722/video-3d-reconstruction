@@ -22,6 +22,14 @@ logger = logging.getLogger("gpu-worker")
 BACKEND_URL = os.environ.get("SEALOS_BACKEND_URL", "https://video2gauss.sealoshzh.site").rstrip("/")
 POLL_INTERVAL = int(os.environ.get("POLL_INTERVAL", "5"))
 CHECKPOINT_PATH = os.environ.get("MODEL_PATH") or os.environ.get("CHECKPOINT_PATH") or "/root/autodl-tmp/lingbot-map.pt"
+GPU_SECRET = os.environ.get("GPU_SECRET", "")
+
+
+def _worker_headers(**extra: str) -> dict[str, str]:
+    headers = {"User-Agent": "gpu-worker/1.0", **extra}
+    if GPU_SECRET:
+        headers["Authorization"] = f"Bearer {GPU_SECRET}"
+    return headers
 
 # ── Model loading (lazy, loaded on first request) ──────────────────────────
 _model = None
@@ -91,7 +99,7 @@ def _find_checkpoint():
 
 # ── Inference pipeline ──────────────────────────────────────────────────────
 def process_video(video_path: str, settings: dict, job_id: str):
-    """Run lingbot-map inference and return (glb_bytes, mesh_bytes_or_None). Cleans temp dirs after."""
+    """Run lingbot-map inference and return point-cloud GLB plus Mesh inputs."""
     import torch
     import cv2
     import numpy as np
@@ -286,12 +294,14 @@ def process_video(video_path: str, settings: dict, job_id: str):
     # Spatial downsampling
     vis_pred_sub = {}
     for k, v in vis_pred.items():
-        if k in ("world_points_from_depth","depth") and v.ndim >= 4:
-            vis_pred_sub[k] = v[:, ::stride, ::stride]
-        elif k == "depth_conf" and v is not None and v.ndim >= 3:
-            vis_pred_sub[k] = v[:, ::stride, ::stride]
+        if k in ("world_points_from_depth", "world_points") and v.ndim >= 4:
+            vis_pred_sub[k] = v[:, ::stride, ::stride, ...]
+        elif k == "depth" and v.ndim >= 3:
+            vis_pred_sub[k] = v[:, ::stride, ::stride, ...]
+        elif k in ("depth_conf", "world_points_conf") and v is not None and v.ndim >= 3:
+            vis_pred_sub[k] = v[:, ::stride, ::stride, ...]
         elif k == "images" and v.ndim >= 4:
-            vis_pred_sub[k] = v[:, :, ::stride, ::stride] if v.shape[1]==3 else v[:, ::stride, ::stride]
+            vis_pred_sub[k] = v[:, :, ::stride, ::stride] if v.shape[1] == 3 else v[:, ::stride, ::stride, ...]
         else:
             vis_pred_sub[k] = v
 
@@ -318,9 +328,6 @@ def process_video(video_path: str, settings: dict, job_id: str):
         if hasattr(scene.geometry[name], 'vertices'):
             total_pts += int(scene.geometry[name].vertices.shape[0])
 
-    # ── Mesh reconstruction (Open3D Poisson) ───────────────────────────
-    mesh_data = _build_mesh(vis_pred_sub, conf_pct_val, tmpdir)
-
     import shutil as _shutil
     _shutil.rmtree(tmpdir, ignore_errors=True)
 
@@ -332,10 +339,12 @@ def process_video(video_path: str, settings: dict, job_id: str):
     settings["_total_elapsed"] = total_elapsed
     settings["_num_points"] = total_pts
 
-    return glb_data, mesh_data
+    return glb_data, vis_pred_sub, conf_pct_val
 
 def poll_and_process():
     """Main loop: poll for pending jobs, process them, upload results."""
+    if not GPU_SECRET or GPU_SECRET == "gpu-worker-secret":
+        raise RuntimeError("GPU_SECRET must be configured with a non-default value")
     logger.info(f"GPU Worker starting, backend={BACKEND_URL}")
 
     # Check cp exists (model loaded lazily on first job)
@@ -347,7 +356,7 @@ def poll_and_process():
             # Get pending jobs from backend
             req = urllib.request.Request(
                 f"{BACKEND_URL}/api/v1/gpu/pending",
-                headers={"User-Agent": "gpu-worker/1.0"},
+                headers=_worker_headers(),
             )
             resp = urllib.request.urlopen(req, timeout=10)
             jobs = json.loads(resp.read())
@@ -365,6 +374,7 @@ def poll_and_process():
             logger.info(f"Processing job {job_id}...")
 
             try:
+                point_cloud_uploaded = False
                 # Download video with retry + backoff
                 video_data = None
                 last_err = None
@@ -374,7 +384,7 @@ def poll_and_process():
                                        f"从后端下载视频{'' if retry==0 else f'重试{retry}/5'}..." if retry==0 else f"下载重试{retry}/5...")
                         video_req = urllib.request.Request(
                             f"{BACKEND_URL}/api/v1/gpu/video/{job_id}",
-                            headers={"User-Agent": "gpu-worker/1.0"},
+                            headers=_worker_headers(),
                         )
                         # Read in 32KB chunks with socket-level read timeout
                         resp = urllib.request.urlopen(video_req, timeout=120)
@@ -413,30 +423,67 @@ def poll_and_process():
                 # Update status to processing
                 _update_status(job_id, "processing", 0.1)
 
-                # Run inference
-                glb_data, mesh_data = process_video(video_tmp, settings, job_id)
+                # Run inference and export the point cloud before starting Mesh reconstruction.
+                glb_data, mesh_inputs, mesh_conf_pct = process_video(video_tmp, settings, job_id)
                 os.unlink(video_tmp)
 
-                # Upload GLB result
-                _update_status(job_id, "processing", 0.9)
+                _update_status(job_id, "processing", 0.9, "上传点云模型...")
                 _upload_result(job_id, glb_data)
+                point_cloud_uploaded = True
 
-                # Upload mesh result if available
-                if mesh_data:
-                    _update_status(job_id, "processing", 0.95, "上传Mesh模型...")
-                    _upload_mesh(job_id, mesh_data)
+                _update_status(job_id, "processing", 0.92, "正在生成 Mesh 模型...")
+                try:
+                    from mesh_builder import build_mesh
+                except ImportError:
+                    from gpu_worker.mesh_builder import build_mesh
+                with tempfile.TemporaryDirectory() as mesh_tmpdir:
+                    mesh_result = build_mesh(mesh_inputs, mesh_conf_pct, mesh_tmpdir)
+                settings["_mesh_stats"] = mesh_result.stats
+                del mesh_inputs
 
-                # Final stream status with stats
+                # Finalize independently so a valid point cloud remains viewable if Mesh fails.
                 nf = settings.get("_num_frames", 0)
                 te = settings.get("_total_elapsed", 0)
                 np_pts = settings.get("_num_points", 0)
-                _update_status(job_id, "completed", 1.0, num_frames=nf, processing_time_secs=te, num_points=np_pts)
-
-                logger.info(f"Job {job_id} completed ({len(glb_data)/1024/1024:.1f} MB, mesh {len(mesh_data)/1024/1024:.1f} MB)" if mesh_data else f"Job {job_id} completed ({len(glb_data)/1024/1024:.1f} MB)")
+                mesh_stats = settings.get("_mesh_stats", {})
+                if not mesh_result.success:
+                    mesh_error = f"Mesh 生成失败: {mesh_result.error}"
+                    _update_status(
+                        job_id,
+                        "partial",
+                        0.9,
+                        mesh_error,
+                        num_frames=nf,
+                        processing_time_secs=te,
+                        num_points=np_pts,
+                    )
+                    logger.warning("Job %s completed with point cloud only: %s", job_id, mesh_error)
+                    mesh_data = b""
+                else:
+                    mesh_data = mesh_result.data
+                    _update_status(job_id, "processing", 0.95, "上传 Mesh 模型...")
+                    _upload_mesh(job_id, mesh_data)
+                    mesh_faces = mesh_stats.get("mesh_triangles", 0)
+                    _update_status(
+                        job_id,
+                        "completed",
+                        1.0,
+                        f"重建完成，Mesh {mesh_faces} 个三角面",
+                        num_frames=nf,
+                        processing_time_secs=te,
+                        num_points=np_pts,
+                    )
+                    logger.info(
+                        "Job %s completed (point cloud %.1f MB, mesh %.1f MB, %s)",
+                        job_id,
+                        len(glb_data) / 1024 / 1024,
+                        len(mesh_data) / 1024 / 1024,
+                        mesh_stats,
+                    )
 
                 # Aggressive GPU cleanup between jobs to prevent OOM
                 del glb_data
-                if mesh_data: del mesh_data
+                del mesh_data
                 import gc; gc.collect()
                 try:
                     import torch as _torch
@@ -447,7 +494,16 @@ def poll_and_process():
             except Exception as e:
                 logger.exception(f"Job {job_id} failed")
                 try:
-                    _update_status(job_id, "failed", 0, str(e)[:500])
+                    partial_stats = settings if point_cloud_uploaded else {}
+                    _update_status(
+                        job_id,
+                        "partial" if point_cloud_uploaded else "failed",
+                        0.9 if point_cloud_uploaded else 0,
+                        str(e)[:500],
+                        num_frames=partial_stats.get("_num_frames", 0),
+                        num_points=partial_stats.get("_num_points", 0),
+                        processing_time_secs=partial_stats.get("_total_elapsed", 0),
+                    )
                 except Exception:
                     pass
                 # Also cleanup GPU after failures
@@ -464,14 +520,14 @@ def poll_and_process():
 def _update_status(job_id: str, status: str, progress: float, detail: str = "",
                    num_frames: int = 0, num_points: int = 0, processing_time_secs: float = 0):
     payload = {"status": status, "progress": progress, "detail": detail,
-               "error_message": detail if status == "failed" else "",
+               "error_message": detail if status in ("failed", "partial") else "",
                "num_frames": int(num_frames), "num_points": int(num_points),
                "processing_time_secs": float(processing_time_secs)}
     data = json.dumps(payload).encode()
     req = urllib.request.Request(
         f"{BACKEND_URL}/api/v1/gpu/status/{job_id}",
         data=data,
-        headers={"Content-Type": "application/json", "User-Agent": "gpu-worker/1.0"},
+        headers=_worker_headers(**{"Content-Type": "application/json"}),
         method="POST",
     )
     urllib.request.urlopen(req, timeout=10)
@@ -484,10 +540,7 @@ def _upload_result(job_id: str, glb_data: bytes):
             req = urllib.request.Request(
                 f"{BACKEND_URL}/api/v1/gpu/result/{job_id}",
                 data=glb_data,
-                headers={
-                    "Content-Type": "application/octet-stream",
-                    "User-Agent": "gpu-worker/1.0",
-                },
+                headers=_worker_headers(**{"Content-Type": "application/octet-stream"}),
                 method="POST",
             )
             urllib.request.urlopen(req, timeout=300)
@@ -499,162 +552,13 @@ def _upload_result(job_id: str, glb_data: bytes):
             else:
                 raise
 
-def _build_mesh(vis_pred: dict, conf_pct: float, tmpdir: str) -> bytes | None:
-    """Build triangle mesh from world points.
-    Uses Poisson (depth=6, 60s timeout) with Ball Pivoting fallback."""
-
-    try:
-        import open3d as o3d
-    except ImportError:
-        logger.warning("open3d not available, skipping mesh reconstruction")
-        return None
-
-    try:
-        import numpy as np
-        import threading
-
-        xyz = vis_pred.get("world_points_from_depth")
-        if xyz is None:
-            xyz = vis_pred.get("world_points")
-        if xyz is None:
-            logger.warning("No world_points for mesh")
-            return None
-
-        images_arr = vis_pred.get("images")
-        depth_conf_arr = vis_pred.get("depth_conf")
-
-        # Flatten world points: (F, H, W, 3) → (M, 3)
-        xyz_flat = xyz.reshape(-1, 3).astype(np.float64)
-
-        # Confidence filtering
-        if depth_conf_arr is not None:
-            conf_flat = depth_conf_arr.ravel()
-            cutoff = np.percentile(conf_flat, max(0, conf_pct)) if conf_flat.size > 0 else 0
-            mask = conf_flat > cutoff
-            xyz_flat = xyz_flat[mask]
-            logger.info(f"Mesh input: {xyz_flat.shape[0]} pts after conf > {conf_pct}%")
-        else:
-            logger.info(f"Mesh input: {xyz_flat.shape[0]} pts (no conf filter)")
-
-        if xyz_flat.shape[0] < 1000:
-            return None
-
-        # ── Color handling ──────────────────────────────────────────────
-        if images_arr is not None:
-            if images_arr.ndim == 4 and images_arr.shape[1] == 3:
-                images_arr = np.transpose(images_arr, (0, 2, 3, 1))
-            rgb_flat = images_arr.reshape(-1, 3).astype(np.float64)
-            if depth_conf_arr is not None:
-                rgb_flat = rgb_flat[mask]
-        else:
-            rgb_flat = np.full_like(xyz_flat, 0.6, dtype=np.float64)
-
-        # ── Build Open3D point cloud ────────────────────────────────────
-        pcd = o3d.geometry.PointCloud()
-        pcd.points = o3d.utility.Vector3dVector(xyz_flat)
-        if rgb_flat is not None:
-            pcd.colors = o3d.utility.Vector3dVector(np.clip(rgb_flat, 0, 1))
-
-        # ── Downsample ──────────────────────────────────────────────────
-        bbox = pcd.get_max_bound() - pcd.get_min_bound()
-        bbox_diag = float(np.linalg.norm(bbox))
-        voxel_size = max(0.01, bbox_diag * 0.005)
-        pcd = pcd.voxel_down_sample(voxel_size)
-        logger.info(f"Mesh downsample: {len(pcd.points)} pts (voxel={voxel_size:.4f})")
-
-        if len(pcd.points) < 50:
-            return None
-
-        # ── Normal estimation ───────────────────────────────────────────
-        radius = max(voxel_size * 3, bbox_diag * 0.01)
-        logger.info(f"Mesh normals: {len(pcd.points)} pts, radius={radius:.4f}")
-        pcd.estimate_normals(o3d.geometry.KDTreeSearchParamHybrid(radius=radius, max_nn=20))
-        try:
-            pcd.orient_normals_consistent_tangent_plane(k=20)
-        except Exception:
-            pass
-
-        # ── Try Poisson with 30s timeout ────────────────────────────────
-        mesh_result = {}
-        exception = {}
-
-        def _run_poisson():
-            try:
-                m, d = o3d.geometry.TriangleMesh.create_from_point_cloud_poisson(pcd, depth=6)
-                mesh_result['mesh'] = m
-                mesh_result['densities'] = d
-            except Exception as ex:
-                exception['poisson'] = ex
-
-        t = threading.Thread(target=_run_poisson)
-        t.start()
-        t.join(timeout=30)
-
-        if t.is_alive():
-            logger.warning("Poisson timed out after 30s, falling back to Ball Pivoting")
-            # Note: the hung thread can't be killed in CPython. It will leak CPU/VRAM
-            # until the process exits, but we free what we can here.
-            import gc
-            gc.collect()
-
-            # ── Ball Pivoting fallback ──────────────────────────────────
-            r1, r2, r3 = bbox_diag * 0.02, bbox_diag * 0.05, bbox_diag * 0.15
-            try:
-                mesh = o3d.geometry.TriangleMesh.create_from_point_cloud_ball_pivoting(
-                    pcd, o3d.utility.DoubleVector([r1, r2, r3]))
-            except Exception:
-                logger.exception("Ball Pivoting also failed")
-                return None
-
-            logger.info(f"Ball Pivoting mesh: {len(mesh.vertices)} verts, {len(mesh.triangles)} faces")
-        elif 'mesh' in mesh_result:
-            mesh = mesh_result['mesh']
-            densities = mesh_result.get('densities')
-
-            # Remove low-density triangles (bottom 5%)
-            if densities is not None and len(densities) > 0:
-                thresh = np.quantile(densities, 0.05)
-                vertices_to_remove = densities < thresh
-                mesh.remove_vertices_by_mask(vertices_to_remove)
-
-            logger.info(f"Poisson mesh: {len(mesh.vertices)} verts, {len(mesh.triangles)} faces (depth=6)")
-        else:
-            logger.warning(f"Poisson failed: {exception.get('poisson', 'unknown')}")
-            return None
-
-        if len(mesh.triangles) < 5:
-            return None
-
-        # ── Vertex color transfer ──────────────────────────────────────
-        pcd_tree = o3d.geometry.KDTreeFlann(pcd)
-        mesh_verts = np.asarray(mesh.vertices, dtype=np.float64)
-        mesh_colors = np.zeros_like(mesh_verts)
-        pcd_cols = np.asarray(pcd.colors)
-        for i in range(len(mesh_verts)):
-            _, idx, _ = pcd_tree.search_knn_vector_3d(mesh_verts[i], 1)
-            mesh_colors[i] = pcd_cols[idx[0]]
-        mesh.vertex_colors = o3d.utility.Vector3dVector(np.clip(mesh_colors, 0, 1))
-
-        # Export GLB
-        mesh_path = os.path.join(tmpdir, "mesh.glb")
-        o3d.io.write_triangle_mesh(mesh_path, mesh)
-        with open(mesh_path, "rb") as f:
-            return f.read()
-
-    except Exception:
-        logger.exception("Mesh reconstruction failed")
-        return None
-
 def _upload_mesh(job_id: str, mesh_data: bytes):
     for attempt in range(3):
         try:
             req = urllib.request.Request(
                 f"{BACKEND_URL}/api/v1/gpu/result_mesh/{job_id}",
                 data=mesh_data,
-                headers={
-                    "Content-Type": "application/octet-stream",
-                    "User-Agent": "gpu-worker/1.0",
-                },
+                headers=_worker_headers(**{"Content-Type": "application/octet-stream"}),
                 method="POST",
             )
             urllib.request.urlopen(req, timeout=300)

@@ -1,30 +1,59 @@
-import os
+import glob as _glob
 import json
 import logging
-import glob as _glob
-from fastapi import APIRouter, Depends, HTTPException, Body, Request
+import os
+import secrets
+import tempfile
+
+from fastapi import APIRouter, Body, Depends, HTTPException, Request
 from fastapi.responses import FileResponse
 from sqlalchemy import select, update
+
+from app.config import settings
 from app.database import async_session
 from app.models.job import Job
-from app.config import settings
 
 router = APIRouter(prefix="/api/v1/gpu")
 logger = logging.getLogger(__name__)
 
-GPU_SECRET = os.environ.get("GPU_SECRET", "gpu-worker-secret")
+GPU_SECRET = os.environ.get("GPU_SECRET", "").strip()
 
 
 async def _verify_gpu(request: Request):
-    """Require GPU Worker authentication in production."""
-    if GPU_SECRET == "gpu-worker-secret":
-        return  # development mode, skip auth
+    """Require the shared GPU Worker bearer token."""
+    if not GPU_SECRET or GPU_SECRET == "gpu-worker-secret":
+        raise HTTPException(status_code=503, detail="GPU worker authentication is not configured")
     auth = request.headers.get("Authorization", "")
-    if auth != f"Bearer {GPU_SECRET}":
+    prefix = "Bearer "
+    if not auth.startswith(prefix) or not secrets.compare_digest(auth[len(prefix):], GPU_SECRET):
         raise HTTPException(status_code=401, detail="Unauthorized")
 
 
-@router.get("/video/{job_id}")
+def _validate_glb(data: bytes, label: str) -> None:
+    if len(data) < 20:
+        raise HTTPException(status_code=400, detail=f"{label} GLB is empty")
+    if data[:4] != b"glTF":
+        raise HTTPException(status_code=400, detail=f"{label} is not a binary GLB")
+    declared_length = int.from_bytes(data[8:12], "little")
+    if declared_length != len(data):
+        raise HTTPException(status_code=400, detail=f"{label} GLB length is invalid")
+
+
+def _write_atomic(path: str, data: bytes) -> None:
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    fd, temp_path = tempfile.mkstemp(prefix=".upload-", suffix=".tmp", dir=os.path.dirname(path))
+    try:
+        with os.fdopen(fd, "wb") as temp_file:
+            temp_file.write(data)
+            temp_file.flush()
+            os.fsync(temp_file.fileno())
+        os.replace(temp_path, path)
+    finally:
+        if os.path.exists(temp_path):
+            os.unlink(temp_path)
+
+
+@router.get("/video/{job_id}", dependencies=[Depends(_verify_gpu)])
 async def serve_video(job_id: str):
     """Serve the original uploaded video for the workbench viewer."""
     job_dir = os.path.join(settings.upload_dir, job_id)
@@ -43,91 +72,111 @@ async def get_pending_jobs():
         )
         jobs = result.scalars().all()
         output = []
-        for j in jobs:
-            # Atomically claim: UPDATE status WHERE id=X AND status='uploaded'
+        for job in jobs:
             stmt = (
-                update(Job).where(Job.id == j.id, Job.status == "uploaded")
+                update(Job)
+                .where(Job.id == job.id, Job.status == "uploaded")
                 .values(status="processing", progress=0.01)
             )
             claimed = await session.execute(stmt)
             if claimed.rowcount and claimed.rowcount > 0:
                 await session.commit()
                 output.append({
-                    "id": j.id,
-                    "settings": json.loads(j.settings) if j.settings else {},
+                    "id": job.id,
+                    "settings": json.loads(job.settings) if job.settings else {},
                 })
         return output
 
 
-@router.post("/status/{job_id}")
+@router.post("/status/{job_id}", dependencies=[Depends(_verify_gpu)])
 async def update_status(job_id: str, data: dict = Body(...)):
     async with async_session() as session:
         result = await session.execute(select(Job).where(Job.id == job_id))
         job = result.scalar_one_or_none()
-        if job:
-            job.status = data.get("status", job.status)
-            job.progress = data.get("progress", job.progress)
-            if data.get("error_message"):
-                job.error_message = data["error_message"]
-            if data.get("num_frames"):
-                job.num_frames = data["num_frames"]
-            if data.get("num_points"):
-                job.num_points = data["num_points"]
-            if data.get("processing_time_secs"):
-                job.processing_time_secs = data["processing_time_secs"]
-            detail = data.get("detail", "")
-            if detail:
-                try:
-                    s = json.loads(job.settings or "{}")
-                except Exception:
-                    s = {}
-                s["_detail"] = detail
-                job.settings = json.dumps(s)
-            await session.commit()
+        if not job:
+            raise HTTPException(status_code=404, detail="Job not found")
+
+        job.status = data.get("status", job.status)
+        job.progress = data.get("progress", job.progress)
+        if data.get("error_message"):
+            job.error_message = data["error_message"]
+        elif job.status == "completed":
+            job.error_message = None
+        if data.get("num_frames") is not None:
+            job.num_frames = data["num_frames"]
+        if data.get("num_points") is not None:
+            job.num_points = data["num_points"]
+        if data.get("processing_time_secs") is not None:
+            job.processing_time_secs = data["processing_time_secs"]
+
+        detail = data.get("detail", "")
+        if detail:
+            try:
+                job_settings = json.loads(job.settings or "{}")
+            except Exception:
+                job_settings = {}
+            job_settings["_detail"] = detail
+            if job.status == "partial":
+                job_settings["_mesh_error"] = (
+                    detail.removeprefix("Mesh 生成失败:").strip()
+                    if detail.startswith("Mesh 生成失败:")
+                    else detail
+                )
+            elif job.status == "failed" and detail.startswith("Mesh 生成失败:"):
+                job_settings["_mesh_error"] = detail.removeprefix("Mesh 生成失败:").strip()
+            elif job.status == "completed":
+                job_settings.pop("_mesh_error", None)
+            job.settings = json.dumps(job_settings, ensure_ascii=False)
+        await session.commit()
     return {"ok": True}
 
 
 @router.post("/result/{job_id}", dependencies=[Depends(_verify_gpu)])
 async def upload_result_raw(job_id: str, request: Request):
-    """Accept raw binary GLB upload (used by GPU worker for large files)."""
+    """Save the point-cloud GLB without completing the job before Mesh upload."""
     content_type = request.headers.get("content-type", "")
     if "multipart" in content_type:
         form = await request.form()
         uploaded = form.get("file")
-        if uploaded:
-            glb_data = await uploaded.read()
-        else:
+        if not uploaded:
             raise HTTPException(status_code=400, detail="No file in multipart")
+        glb_data = await uploaded.read()
     else:
         glb_data = await request.body()
-
-    job_dir = os.path.join(settings.upload_dir, job_id)
-    os.makedirs(job_dir, exist_ok=True)
-    glb_path = os.path.join(job_dir, "result.glb")
-    with open(glb_path, "wb") as f:
-        f.write(glb_data)
+    _validate_glb(glb_data, "Point cloud")
 
     async with async_session() as session:
         result = await session.execute(select(Job).where(Job.id == job_id))
         job = result.scalar_one_or_none()
-        if job:
-            job.status = "completed"
-            job.progress = 1.0
-            job.result_path = f"results/{job_id}/pointcloud.glb"
-            await session.commit()
+        if not job:
+            raise HTTPException(status_code=404, detail="Job not found")
 
-    logger.info(f"GPU result saved for job {job_id}: {len(glb_data)/1024/1024:.1f} MB")
+        glb_path = os.path.join(settings.upload_dir, job_id, "result.glb")
+        _write_atomic(glb_path, glb_data)
+        job.status = "processing"
+        job.progress = max(job.progress or 0.0, 0.9)
+        job.result_path = f"results/{job_id}/pointcloud.glb"
+        await session.commit()
+
+    logger.info("GPU result saved for job %s: %.1f MB", job_id, len(glb_data) / 1024 / 1024)
     return {"ok": True}
 
 
 @router.post("/result_mesh/{job_id}", dependencies=[Depends(_verify_gpu)])
 async def upload_result_mesh(job_id: str, request: Request):
-    """Accept raw binary GLB mesh upload from GPU worker."""
+    """Validate and atomically save the triangle-mesh GLB."""
     glb_data = await request.body()
-    job_dir = os.path.join(settings.upload_dir, job_id)
-    os.makedirs(job_dir, exist_ok=True)
-    mesh_path = os.path.join(job_dir, "result_mesh.glb")
-    with open(mesh_path, "wb") as f:
-        f.write(glb_data)
-    logger.info(f"GPU mesh saved for job {job_id}: {len(glb_data)/1024/1024:.1f} MB")
+    _validate_glb(glb_data, "Mesh")
+
+    async with async_session() as session:
+        result = await session.execute(select(Job).where(Job.id == job_id))
+        job = result.scalar_one_or_none()
+        if not job:
+            raise HTTPException(status_code=404, detail="Job not found")
+        mesh_path = os.path.join(settings.upload_dir, job_id, "result_mesh.glb")
+        _write_atomic(mesh_path, glb_data)
+        job.progress = max(job.progress or 0.0, 0.95)
+        await session.commit()
+
+    logger.info("GPU mesh saved for job %s: %.1f MB", job_id, len(glb_data) / 1024 / 1024)
     return {"ok": True}

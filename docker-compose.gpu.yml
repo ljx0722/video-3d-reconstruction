@@ -1,16 +1,11 @@
-version: "3.8"
-
 services:
   gpu-worker:
     build:
-      context: ./gpu_worker
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: gpu_worker/Dockerfile
     environment:
-      REDIS_URL: redis://redis:6379/0
-      MINIO_ENDPOINT: minio:9000
-      MINIO_ACCESS_KEY: minioadmin
-      MINIO_SECRET_KEY: minioadmin
-      MINIO_BUCKET: video-3d
+      SEALOS_BACKEND_URL: ${SEALOS_BACKEND_URL:-http://backend:8000}
+      GPU_SECRET: ${GPU_SECRET:?GPU_SECRET is required}
       MODEL_PATH: /models/checkpoint.pt
     volumes:
       - model_data:/models

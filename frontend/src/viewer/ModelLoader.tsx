@@ -44,7 +44,16 @@ export default function ModelLoader({ url, pointSize, opacity = 1, onPointsReady
         if (child.isMesh) {
           const geo = child.geometry as THREE.BufferGeometry | undefined;
           if (geo && geo.index) {
-            meshList.push(child.clone());
+            const mesh = child as THREE.Mesh;
+            mesh.updateWorldMatrix(true, false);
+            const clone = mesh.clone();
+            clone.geometry = geo.clone();
+            clone.geometry.applyMatrix4(mesh.matrixWorld);
+            clone.position.set(0, 0, 0);
+            clone.quaternion.identity();
+            clone.scale.set(1, 1, 1);
+            clone.updateMatrix();
+            meshList.push(clone);
           }
           return;
         }
@@ -107,7 +116,10 @@ export default function ModelLoader({ url, pointSize, opacity = 1, onPointsReady
         group.add(wLine);
         return;
       }
-      const clonedMat = (m.material as THREE.MeshStandardMaterial).clone();
+      const sourceMaterial = Array.isArray(m.material) ? m.material[0] : m.material;
+      const clonedMat = sourceMaterial instanceof THREE.MeshStandardMaterial
+        ? sourceMaterial.clone()
+        : new THREE.MeshStandardMaterial({ color: '#d1d5db', vertexColors: m.geometry.hasAttribute('color') });
       clonedMat.clipShadows = true;
       clonedMat.clippingPlanes = clipPlanes || [];
       const clonedMesh = new THREE.Mesh(m.geometry, clonedMat);

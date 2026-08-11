@@ -19,6 +19,7 @@ def _safe_path(job_id: str, filename: str) -> str:
     return p
 
 
+@router.head("/{job_id}/result.glb", include_in_schema=False)
 @router.get("/{job_id}/result.glb")
 async def get_result_file(job_id: str):
     path = _safe_path(job_id, "result.glb")
@@ -28,6 +29,7 @@ async def get_result_file(job_id: str):
                         headers={"Cache-Control": "public, max-age=3600"})
 
 
+@router.head("/{job_id}/result_mesh.glb", include_in_schema=False)
 @router.get("/{job_id}/result_mesh.glb")
 async def get_mesh_file(job_id: str):
     path = _safe_path(job_id, "result_mesh.glb")

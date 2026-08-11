@@ -30,6 +30,11 @@ spec:
               value: "sqlite+aiosqlite:///./data/jobs.db"
             - name: PYTHONUNBUFFERED
               value: "1"
+            - name: GPU_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: video2gauss-secrets
+                  key: gpu-secret
           volumeMounts:
             - name: data
               mountPath: /app/data
