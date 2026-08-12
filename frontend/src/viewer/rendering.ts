@@ -19,12 +19,12 @@ export function decodeArtifactColor(value: number, colorsAreLinear: boolean) {
 export function getPointMaterialProfile(mode: ViewerMode, pointSize: number, opacity: number) {
   const soft = mode === 'gaussian';
   return {
-    size: soft ? pointSize * 1.75 : pointSize,
-    opacity: soft ? Math.min(opacity, 0.8) : opacity,
+    size: soft ? pointSize * 4 : pointSize,
+    opacity: soft ? Math.min(opacity, 0.75) : opacity,
     blending: THREE.NormalBlending,
     depthTest: true,
-    depthWrite: true,
-    alphaTest: soft ? 0.05 : 0,
+    depthWrite: soft ? false : true,
+    alphaTest: 0,
     useSoftTexture: soft,
   };
 }

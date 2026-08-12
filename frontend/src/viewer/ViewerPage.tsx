@@ -660,7 +660,7 @@ function KeyboardHint() {
 function DisplayModeBar({ viewMode, setViewMode, meshAvailable, meshError }: { viewMode: string; setViewMode: (v: string) => void; meshAvailable: boolean; meshError?: string | null }) {
   const modes = [
     ['points', '点云', '标准点云显示'],
-    ['gaussian', '柔和点', '圆形软点显示，并非协方差 3DGS'],
+    ['gaussian', '高斯溅射', '基于点云的高斯软点显示；当前工件不含协方差参数'],
     ['mesh', '表面', '着色三角表面'],
     ['wireframe', '结构线', '仅显示边界与明显折痕'],
   ] as const;

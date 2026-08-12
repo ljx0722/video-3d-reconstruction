@@ -3,15 +3,16 @@ import * as THREE from 'three';
 import { createPointColors, createPresentationMaterial, decodeArtifactColor, getPointMaterialProfile, linearToSrgb, srgbToLinear } from './rendering';
 
 describe('viewer rendering profiles', () => {
-  it('keeps soft points depth-aware and non-additive', () => {
+  it('restores the readable Gaussian splat profile without additive overexposure', () => {
     const profile = getPointMaterialProfile('gaussian', 0.004, 1);
 
     expect(profile.blending).toBe(THREE.NormalBlending);
-    expect(profile.depthWrite).toBe(true);
+    expect(profile.depthWrite).toBe(false);
     expect(profile.depthTest).toBe(true);
-    expect(profile.alphaTest).toBe(0.05);
-    expect(profile.size).toBeCloseTo(0.007);
-    expect(profile.opacity).toBe(0.8);
+    expect(profile.alphaTest).toBe(0);
+    expect(profile.size).toBeCloseTo(0.016);
+    expect(profile.opacity).toBe(0.75);
+    expect(profile.useSoftTexture).toBe(true);
   });
 
   it('keeps normal points opaque and unscaled', () => {
