@@ -7,6 +7,7 @@ import ViewerCanvas from './ViewerCanvas';
 import ControlsPanel from './ControlsPanel';
 import CrossSectionView from './CrossSectionView';
 import { type BoxClip } from './Toolbar';
+import { createPointColors } from './rendering';
 import type { Job } from '../types';
 
 class ErrorBoundary extends Component<{ children: React.ReactNode }, { hasError: boolean; error: Error | null }> {
@@ -55,11 +56,12 @@ export default function ViewerPage() {
   const [showTrajectory, setShowTrajectory] = useState(true);
   const [orthographic, setOrthographic] = useState(false);
   const [colorMode, setColorMode] = useState('rgb');
-  const [brightness, setBrightness] = useState(1.0);
+  const [exposure, setExposure] = useState(1.0);
   const [showGrid, setShowGrid] = useState(false);
-  const [edlStrength, setEdlStrength] = useState(0.0);
+  const [bloomStrength, setBloomStrength] = useState(0.0);
   const [viewMode, setViewMode] = useState<string>('points');
-  const splatMode = viewMode === 'gaussian';
+  const [edgeThreshold, setEdgeThreshold] = useState(30);
+  const [fitToken, setFitToken] = useState(0);
 
   // Processing
   const [pointCount, setPointCount] = useState(0);
@@ -134,10 +136,23 @@ export default function ViewerPage() {
   // Refs
   const pointsRef = useRef<THREE.Points | null>(null);
   const originalData = useRef<{ pos: Float32Array; col: Float32Array } | null>(null);
+  const [editedPointData, setEditedPointData] = useState<{ pos: Float32Array; col: Float32Array } | null>(null);
   const [rawSectionData, setRawSectionData] = useState<{ pos: Float32Array; col: Float32Array } | null>(null);
   const [canvasEl, setCanvasEl] = useState<HTMLCanvasElement | null>(null);
   const [meshAvailable, setMeshAvailable] = useState(false);
   const sceneCamRef = useRef<THREE.Camera | null>(null);
+
+  useEffect(() => {
+    originalData.current = null;
+    historyRef.current = [];
+    historyIdx.current = -1;
+    pointsRef.current = null;
+    setEditedPointData(null);
+    setRawSectionData(null);
+    setPointCount(0);
+    setOriginalCount(0);
+    setOrbitTarget([0, 0, 0]);
+  }, [jobId]);
 
   // Measure click
   useEffect(() => {
@@ -204,11 +219,9 @@ export default function ViewerPage() {
   }, [orientMode, canvasEl]);
 
   const _updateGeometry = useCallback((newPos: Float32Array, newCol: Float32Array) => {
-    if (!pointsRef.current) return;
-    const geo = new THREE.BufferGeometry();
-    geo.setAttribute('position', new THREE.BufferAttribute(newPos, 3));
-    geo.setAttribute('color', new THREE.BufferAttribute(newCol, 3));
-    pointsRef.current.geometry = geo;
+    const pointData = { pos: newPos, col: newCol };
+    setEditedPointData(pointData);
+    setRawSectionData(pointData);
     setPointCount(newPos.length / 3);
   }, []);
 
@@ -326,6 +339,7 @@ export default function ViewerPage() {
         const posCopy = (pos.array as Float32Array).slice();
         const colCopy = col ? (col.array as Float32Array).slice() : new Float32Array(pos.count * 3).fill(1);
         originalData.current = { pos: posCopy, col: colCopy };
+        setEditedPointData({ pos: posCopy, col: colCopy });
         setRawSectionData({ pos: posCopy, col: colCopy });
         setOriginalCount(pos.count);
         setPointCount(pos.count);
@@ -433,10 +447,15 @@ export default function ViewerPage() {
     let content = '';
     if (format === 'PLY') {
       content = `ply\nformat ascii 1.0\nelement vertex ${n}\nproperty float x\nproperty float y\nproperty float z\nproperty uchar red\nproperty uchar green\nproperty uchar blue\nend_header\n`;
+      const linearToByte = (value: number) => {
+        const linear = Math.max(0, Math.min(1, value));
+        const srgb = linear <= 0.0031308 ? linear * 12.92 : 1.055 * Math.pow(linear, 1 / 2.4) - 0.055;
+        return Math.round(srgb * 255);
+      };
       for (let i = 0; i < n; i++) {
-        const r = col ? Math.round(Math.min(1, col.getX(i)) * 255) : 255;
-        const g = col ? Math.round(Math.min(1, col.getY(i)) * 255) : 255;
-        const b = col ? Math.round(Math.min(1, col.getZ(i)) * 255) : 255;
+        const r = col ? linearToByte(col.getX(i)) : 255;
+        const g = col ? linearToByte(col.getY(i)) : 255;
+        const b = col ? linearToByte(col.getZ(i)) : 255;
         content += `${pos.getX(i).toFixed(6)} ${pos.getY(i).toFixed(6)} ${pos.getZ(i).toFixed(6)} ${r} ${g} ${b}\n`;
       }
     } else if (format === 'XYZ') {
@@ -461,50 +480,22 @@ export default function ViewerPage() {
     a.click();
   }, []);
 
-  const doResetView = useCallback(() => { setOrthographic(false); }, []);
+  const doResetView = useCallback(() => {
+    setOrthographic(false);
+    setFitToken(token => token + 1);
+  }, []);
 
-  const applyColor = useCallback((mode: string, b: number) => {
-    const pts = pointsRef.current;
-    if (!pts) return;
-    const geo = pts.geometry;
-    const pos = geo.getAttribute('position');
-    const origCol = originalData.current?.col;
-    if (!pos) return;
-    const n = pos.count;
-    const colors = new Float32Array(n * 3);
-
-    if (mode === 'rgb' && origCol) {
-      for (let i = 0; i < n; i++) {
-        colors[i*3]=Math.min(1,origCol[i*3]*b);
-        colors[i*3+1]=Math.min(1,origCol[i*3+1]*b);
-        colors[i*3+2]=Math.min(1,origCol[i*3+2]*b);
-      }
-    } else if (mode === 'height') {
-      let minY=Infinity,maxY=-Infinity;
-      for (let i=0;i<n;i++){const y=pos.getY(i);minY=Math.min(minY,y);maxY=Math.max(maxY,y);}
-      const rng=maxY-minY||1;
-      for (let i=0;i<n;i++){
-        const t=Math.max(0,Math.min(1,(pos.getY(i)-minY)/rng));
-        colors[i*3]=t*0.9+0.05; colors[i*3+1]=(1-t)*0.7+0.1; colors[i*3+2]=(1-t)*0.85+0.1;
-      }
-    } else if (mode === 'depth') {
-      let minZ=Infinity,maxZ=-Infinity;
-      for (let i=0;i<n;i++){const z=pos.getZ(i);minZ=Math.min(minZ,z);maxZ=Math.max(maxZ,z);}
-      const rng=maxZ-minZ||1;
-      for (let i=0;i<n;i++){
-        const t=Math.max(0,Math.min(1,(pos.getZ(i)-minZ)/rng));
-        colors[i*3]=1-t*0.7; colors[i*3+1]=t*0.9; colors[i*3+2]=0.2;
-      }
-    } else {
-      for (let i=0;i<n;i++){colors[i*3]=colors[i*3+1]=colors[i*3+2]=Math.min(1,0.8*b);}
-    }
-    geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
-    geo.attributes.color.needsUpdate = true;
+  const applyColor = useCallback((mode: string) => {
+    const source = originalData.current;
+    if (!source) return;
+    const colors = createPointColors(mode, source.pos, source.col);
+    setEditedPointData({ pos: source.pos, col: colors });
+    setRawSectionData({ pos: source.pos, col: colors });
   }, []);
 
   useEffect(() => {
-    if (pointsRef.current && originalData.current) applyColor(colorMode, brightness);
-  }, [colorMode, brightness, applyColor]);
+    if (pointsRef.current && originalData.current) applyColor(colorMode);
+  }, [colorMode, applyColor]);
 
   const isProcessing = job?.status === 'uploaded' || job?.status === 'processing';
   const canViewPointCloud = job?.status === 'completed' || job?.status === 'partial' || job?.point_cloud_available === true;
@@ -577,8 +568,11 @@ export default function ViewerPage() {
             <ErrorBoundary>
             <ViewerCanvas jobId={job.id} pointSize={pointSize} opacity={opacity}
               onPointsReady={handlePointsReady} boxClip={boxClip}
-              showAxes={showAxes} orthographic={orthographic} splatMode={splatMode}
-              showGrid={showGrid} edlStrength={edlStrength}
+              showAxes={showAxes} orthographic={orthographic}
+              showGrid={showGrid} bloomStrength={bloomStrength}
+              exposure={exposure} edgeThreshold={edgeThreshold} fitToken={fitToken}
+              colorsAreLinear={job.artifact_metadata?.color_space === 'linear-srgb'}
+              editedPointData={editedPointData}
               showTrajectory={showTrajectory}
               orbitTarget={orbitTarget}
               viewMode={viewMode as any}
@@ -608,10 +602,11 @@ export default function ViewerPage() {
               onExport={doExport}
               showAxes={showAxes} setShowAxes={setShowAxes}
               colorMode={colorMode} setColorMode={setColorMode}
-              brightness={brightness} setBrightness={setBrightness}
+              exposure={exposure} setExposure={setExposure}
+              viewMode={viewMode} edgeThreshold={edgeThreshold} setEdgeThreshold={setEdgeThreshold}
               onScreenshot={doScreenshot} onResetView={doResetView}
               showGrid={showGrid} setShowGrid={setShowGrid}
-              edlStrength={edlStrength} setEdlStrength={setEdlStrength}
+              bloomStrength={bloomStrength} setBloomStrength={setBloomStrength}
               showTrajectory={showTrajectory} setShowTrajectory={setShowTrajectory}
               orientMode={orientMode} setOrientMode={setOrientMode}
               orientMarkers={orientMarkers}
@@ -664,17 +659,17 @@ function KeyboardHint() {
 
 function DisplayModeBar({ viewMode, setViewMode, meshAvailable, meshError }: { viewMode: string; setViewMode: (v: string) => void; meshAvailable: boolean; meshError?: string | null }) {
   const modes = [
-    ['points', '点云'],
-    ['gaussian', '高斯溅射'],
-    ['mesh', 'Mesh'],
-    ['wireframe', '线框'],
+    ['points', '点云', '标准点云显示'],
+    ['gaussian', '柔和点', '圆形软点显示，并非协方差 3DGS'],
+    ['mesh', '表面', '着色三角表面'],
+    ['wireframe', '结构线', '仅显示边界与明显折痕'],
   ] as const;
 
   return (
     <div className="absolute top-3 left-1/2 -translate-x-1/2 z-10 flex flex-col items-center gap-1.5">
       <div className="bg-gray-900/95 backdrop-blur rounded-full px-1 py-1 flex gap-0.5 border border-gray-800 shadow-xl">
-        {modes.map(([k, label]) => (
-          <button key={k} onClick={() => setViewMode(k)}
+        {modes.map(([k, label, title]) => (
+          <button key={k} onClick={() => setViewMode(k)} title={title}
             disabled={(k === 'mesh' || k === 'wireframe') && !meshAvailable}
             className={`px-4 py-1 rounded-full text-[11px] font-medium transition-all duration-200
               ${viewMode === k

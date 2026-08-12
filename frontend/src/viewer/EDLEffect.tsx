@@ -1,19 +1,20 @@
-import { EffectComposer, Bloom } from '@react-three/postprocessing';
-import { BlendFunction } from 'postprocessing';
+import { EffectComposer, Bloom, ToneMapping } from '@react-three/postprocessing';
+import { BlendFunction, ToneMappingMode } from 'postprocessing';
 
-interface EDLProps {
-  edlStrength?: number;
+interface BloomEffectProps {
+  bloomStrength?: number;
 }
 
-export default function EDLEffect({ edlStrength = 0 }: EDLProps) {
-  if (edlStrength <= 0.01) return null;
+export default function BloomEffect({ bloomStrength = 0 }: BloomEffectProps) {
+  if (bloomStrength <= 0.01) return null;
 
   return (
     <EffectComposer enabled multisampling={0}>
+      <ToneMapping mode={ToneMappingMode.ACES_FILMIC} />
       <Bloom
-        luminanceThreshold={0.4}
-        luminanceSmoothing={0.7}
-        intensity={edlStrength * 0.3}
+        luminanceThreshold={0.9}
+        luminanceSmoothing={0.2}
+        intensity={bloomStrength}
         mipmapBlur={false}
         blendFunction={BlendFunction.SCREEN}
       />

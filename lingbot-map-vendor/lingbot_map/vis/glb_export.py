@@ -127,12 +127,24 @@ def predictions_to_glb(
     # Prepare vertices and colors
     vertices_3d = pred_world_points.reshape(-1, 3)
 
-    # Handle different image formats
+    # Handle different image formats. glTF COLOR_0 values are linear, while model
+    # input images are sRGB, so convert before quantizing the vertex colors.
     if images.ndim == 4 and images.shape[1] == 3:  # NCHW format
-        colors_rgb = np.transpose(images, (0, 2, 3, 1))
+        colors_srgb = np.transpose(images, (0, 2, 3, 1))
     else:
-        colors_rgb = images
-    colors_rgb = (colors_rgb.reshape(-1, 3) * 255).astype(np.uint8)
+        colors_srgb = images
+    colors_srgb = np.nan_to_num(
+        colors_srgb.reshape(-1, 3), nan=0.0, posinf=1.0, neginf=0.0
+    )
+    if colors_srgb.size and float(np.max(colors_srgb)) > 1.0:
+        colors_srgb = colors_srgb / 255.0
+    colors_srgb = np.clip(colors_srgb, 0.0, 1.0)
+    colors_linear = np.where(
+        colors_srgb <= 0.04045,
+        colors_srgb / 12.92,
+        ((colors_srgb + 0.055) / 1.055) ** 2.4,
+    )
+    colors_rgb = np.rint(colors_linear * 255.0).astype(np.uint8)
 
     # Apply confidence filtering
     conf = pred_world_points_conf.reshape(-1)
@@ -308,6 +320,25 @@ def integrate_camera_into_scene(
     scene.add_geometry(camera_mesh)
 
 
+def compute_scene_alignment(extrinsics_matrices: np.ndarray) -> np.ndarray:
+    """Compute the world-space transform used to align exported artifacts."""
+    extrinsics_matrices = np.asarray(extrinsics_matrices)
+    if extrinsics_matrices.ndim != 3 or extrinsics_matrices.shape[1:] != (4, 4):
+        raise ValueError(
+            f"extrinsics_matrices must have shape (N, 4, 4), got {extrinsics_matrices.shape}"
+        )
+    if len(extrinsics_matrices) == 0:
+        raise ValueError("extrinsics_matrices must contain at least one camera")
+
+    align_rotation = np.eye(4)
+    align_rotation[:3, :3] = Rotation.from_euler("y", 180, degrees=True).as_matrix()
+    return (
+        np.linalg.inv(extrinsics_matrices[0])
+        @ get_opengl_conversion_matrix()
+        @ align_rotation
+    )
+
+
 def apply_scene_alignment(
     scene_3d: "trimesh.Scene",
     extrinsics_matrices: np.ndarray
@@ -322,15 +353,7 @@ def apply_scene_alignment(
     Returns:
         Aligned 3D scene
     """
-    opengl_conversion_matrix = get_opengl_conversion_matrix()
-
-    align_rotation = np.eye(4)
-    align_rotation[:3, :3] = Rotation.from_euler("y", 180, degrees=True).as_matrix()
-
-    initial_transformation = (
-        np.linalg.inv(extrinsics_matrices[0]) @ opengl_conversion_matrix @ align_rotation
-    )
-    scene_3d.apply_transform(initial_transformation)
+    scene_3d.apply_transform(compute_scene_alignment(extrinsics_matrices))
     return scene_3d
 
 

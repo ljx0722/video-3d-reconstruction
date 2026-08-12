@@ -1,3 +1,20 @@
+export interface ArtifactMetadata {
+  version?: number | string;
+  alignment?: string;
+  color_space?: string;
+  confidence_percentile?: number;
+  spatial_stride?: number;
+  keyframes?: number;
+  [key: string]: unknown;
+}
+
+export interface MeshStats {
+  mesh_triangles?: number;
+  alignment_applied?: boolean | number;
+  glb_bytes?: number;
+  [key: string]: unknown;
+}
+
 export interface JobSettings {
   fps: number;
   mode: 'streaming' | 'windowed';
@@ -13,6 +30,8 @@ export interface Job {
   point_cloud_available?: boolean;
   mesh_available?: boolean;
   mesh_error?: string | null;
+  artifact_metadata?: ArtifactMetadata | null;
+  mesh_stats?: MeshStats | null;
   error_message: string | null;
   num_frames: number | null;
   num_points: number | null;

@@ -2,6 +2,7 @@ import useSWR from 'swr';
 import { Link } from 'react-router-dom';
 import { listJobs, deleteJob } from '../api/client';
 import { useState } from 'react';
+import { formatBeijingDateTime } from '../time';
 import type { Job } from '../types';
 
 const statusMap: Record<string, string> = {
@@ -21,12 +22,6 @@ const statusColors: Record<string, string> = {
   completed: 'bg-green-500/20 text-green-400',
   failed: 'bg-red-500/20 text-red-400',
 };
-
-function formatBeijingTime(iso: string | null | undefined) {
-  if (!iso) return '';
-  try { return new Date(iso).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' }); }
-  catch { return iso; }
-}
 
 function formatFileSize(bytes: number | null | undefined) {
   if (!bytes || bytes < 0) return '';
@@ -82,7 +77,7 @@ export default function JobList() {
               <div className="text-xs text-gray-500 mt-2 space-y-0.5">
                 {job.file_name && <p>文件：<span className="text-gray-400">{job.file_name}</span></p>}
                 <p>
-                  {formatBeijingTime(job.created_at)}
+                  {job.created_at ? formatBeijingDateTime(job.created_at) : ''}
                   {job.file_size_bytes && ` · ${formatFileSize(job.file_size_bytes)}`}
                   {job.num_points ? ` · ${(job.num_points / 10000).toFixed(1)} 万点` : ''}
                   {job.processing_time_secs && ` · 耗时 ${job.processing_time_secs.toFixed(0)}s`}

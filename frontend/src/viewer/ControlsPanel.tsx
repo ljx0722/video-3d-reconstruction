@@ -19,11 +19,13 @@ interface CtrlProps {
   showAxes: boolean; setShowAxes: (v: boolean) => void;
   showTrajectory: boolean; setShowTrajectory: (v: boolean) => void;
   colorMode: string; setColorMode: (m: string) => void;
-  brightness: number; setBrightness: (v: number) => void;
+  exposure: number; setExposure: (v: number) => void;
+  viewMode: string;
+  edgeThreshold: number; setEdgeThreshold: (v: number) => void;
   onScreenshot: () => void;
   onResetView: () => void;
   showGrid: boolean; setShowGrid: (v: boolean) => void;
-  edlStrength: number; setEdlStrength: (v: number) => void;
+  bloomStrength: number; setBloomStrength: (v: number) => void;
   orientMode?: boolean; setOrientMode?: (v: boolean) => void;
   orientMarkers?: THREE.Vector3[] | null;
   orientPlane?: { normal: THREE.Vector3; center: THREE.Vector3 } | null;
@@ -96,7 +98,7 @@ export default function ControlsPanel(p: CtrlProps) {
         {/* Color Mode */}
         <Btn icon="◉" label="着色模式" active={panel === 'color'} onClick={() => toggle('color')} />
         {panel === 'color' && <ColorPanel colorMode={p.colorMode} setColorMode={p.setColorMode}
-          brightness={p.brightness} setBrightness={p.setBrightness} />}
+          exposure={p.exposure} setExposure={p.setExposure} viewMode={p.viewMode} />}
 
         {/* Processing / Filters */}
         <Btn icon="◇" label="点云处理" active={panel === 'filter'} onClick={() => toggle('filter')} />
@@ -148,9 +150,11 @@ export default function ControlsPanel(p: CtrlProps) {
 }
 
 /* ── View Panel (merged grid + reset) ─────────────────── */
-function ViewPanel({ pointSize, setPointSize, opacity, setOpacity, showAxes, setShowAxes, showTrajectory, setShowTrajectory, edlStrength, setEdlStrength, showGrid, setShowGrid, onResetView }: any) {
+function ViewPanel({ pointSize, setPointSize, opacity, setOpacity, showAxes, setShowAxes, showTrajectory, setShowTrajectory, bloomStrength, setBloomStrength, showGrid, setShowGrid, onResetView, viewMode, edgeThreshold, setEdgeThreshold }: any) {
+  const showPointControls = viewMode === 'points' || viewMode === 'gaussian';
   return (
     <Card title="显示设置">
+      {showPointControls && <>
       <label className="text-gray-500 block mb-1">
         点大小 <span className="text-gray-600">{pointSize.toFixed(4)}</span>
       </label>
@@ -162,6 +166,19 @@ function ViewPanel({ pointSize, setPointSize, opacity, setOpacity, showAxes, set
       </label>
       <input type="range" min={0.1} max={1} step={0.05} value={opacity}
         onChange={e => setOpacity(Number(e.target.value))} className="w-full accent-blue-500 mb-3" />
+      </>}
+
+      {viewMode === 'wireframe' && <>
+        <label className="text-gray-500 block mb-1">结构线密度</label>
+        <div className="grid grid-cols-3 gap-1 mb-3">
+          {[[15, '细节'], [30, '均衡'], [45, '简洁']].map(([angle, label]) => (
+            <button key={angle} onClick={() => setEdgeThreshold(Number(angle))}
+              className={`py-1 rounded text-[10px] ${edgeThreshold === angle ? 'bg-blue-500/20 text-blue-400 border border-blue-500/30' : 'bg-gray-800/50 text-gray-500'}`}>
+              {label}
+            </button>
+          ))}
+        </div>
+      </>}
 
       <div className="flex gap-1 mb-2">
         <button onClick={() => setShowAxes(!showAxes)}
@@ -188,37 +205,36 @@ function ViewPanel({ pointSize, setPointSize, opacity, setOpacity, showAxes, set
       </div>
 
       <label className="text-gray-500 block mb-1">
-        EDL <span className="text-gray-600">{(edlStrength ?? 0).toFixed(1)}</span>
+        辉光（Bloom） <span className="text-gray-600">{(bloomStrength ?? 0).toFixed(2)}</span>
       </label>
-      <input type="range" min={0} max={1} step={0.1} value={edlStrength ?? 0}
-        onChange={e => setEdlStrength(Number(e.target.value))} className="w-full accent-blue-500 mb-1" />
+      <input type="range" min={0} max={0.25} step={0.05} value={bloomStrength ?? 0}
+        onChange={e => setBloomStrength(Number(e.target.value))} className="w-full accent-blue-500 mb-1" />
     </Card>
   );
 }
 
 /* ── Color Panel (gaussian toggle removed) ─────────── */
-function ColorPanel({ colorMode, setColorMode, brightness, setBrightness }: any) {
+function ColorPanel({ colorMode, setColorMode, exposure, setExposure, viewMode }: any) {
+  const showPointColors = viewMode === 'points' || viewMode === 'gaussian';
   return (
-    <Card title="着色模式">
-      <div className="grid grid-cols-3 gap-1 mb-3">
+    <Card title="着色与曝光">
+      {showPointColors && <div className="grid grid-cols-2 gap-1 mb-3">
         {[
           ['rgb', '原始色'],
           ['height', '高度'],
           ['depth', '深度'],
-          ['confidence', '置信度'],
           ['white', '白色'],
-          ['normal', '法线'],
         ].map(([k, label]) => (
           <button key={k} onClick={() => setColorMode(k)}
             className={`py-1 rounded text-[10px] ${colorMode === k ? 'bg-blue-500/20 text-blue-400 border border-blue-500/30' : 'bg-gray-800/50 text-gray-500'}`}>
             {label}
           </button>
         ))}
-      </div>
+      </div>}
 
-      <label className="text-gray-500 block mb-1">亮度 <span className="text-gray-600">{brightness.toFixed(1)}</span></label>
-      <input type="range" min={0.3} max={2} step={0.1} value={brightness}
-        onChange={e => setBrightness(Number(e.target.value))} className="w-full accent-blue-500" />
+      <label className="text-gray-500 block mb-1">曝光 <span className="text-gray-600">{exposure.toFixed(1)}</span></label>
+      <input type="range" min={0.6} max={1.4} step={0.05} value={exposure}
+        onChange={e => setExposure(Number(e.target.value))} className="w-full accent-blue-500" />
     </Card>
   );
 }

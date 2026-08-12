@@ -23,6 +23,39 @@ BACKEND_URL = os.environ.get("SEALOS_BACKEND_URL", "https://video2gauss.sealoshz
 POLL_INTERVAL = int(os.environ.get("POLL_INTERVAL", "5"))
 CHECKPOINT_PATH = os.environ.get("MODEL_PATH") or os.environ.get("CHECKPOINT_PATH") or "/root/autodl-tmp/lingbot-map.pt"
 GPU_SECRET = os.environ.get("GPU_SECRET", "")
+ARTIFACT_VERSION = 2
+ARTIFACT_ALIGNMENT = "first-camera-opengl-y180"
+
+
+def _clamp_conf_percentile(value, default: float = 1.5) -> float:
+    """Return a finite user confidence percentile clamped to [0, 100]."""
+    import math
+
+    try:
+        percentile = float(value)
+    except (TypeError, ValueError):
+        percentile = default
+    if not math.isfinite(percentile):
+        percentile = default
+    return max(0.0, min(100.0, percentile))
+
+
+def _artifact_metadata(settings: dict | None = None) -> dict:
+    """Build public artifact metadata without copying request settings or secrets."""
+    metadata = {
+        "version": ARTIFACT_VERSION,
+        "alignment": ARTIFACT_ALIGNMENT,
+        "color_space": "linear-srgb",
+    }
+    if settings is not None:
+        metadata.update({
+            "confidence_percentile": _clamp_conf_percentile(
+                settings.get("_conf_pct", settings.get("conf_threshold", 1.5))
+            ),
+            "spatial_stride": int(settings.get("_dynamic_stride", 1)),
+            "keyframes": int(settings.get("_artifact_keyframes", 0)),
+        })
+    return metadata
 
 
 def _worker_headers(**extra: str) -> dict[str, str]:
@@ -106,7 +139,6 @@ def process_video(video_path: str, settings: dict, job_id: str):
     from lingbot_map.utils.load_fn import load_and_preprocess_images
     from lingbot_map.utils.pose_enc import pose_encoding_to_extri_intri
     from lingbot_map.utils.geometry import closed_form_inverse_se3_general
-    import trimesh
 
     load_model()
 
@@ -133,27 +165,26 @@ def process_video(video_path: str, settings: dict, job_id: str):
     # Point budget per keyframe: stride=1→268K, stride=2→67K, stride=3→30K
     # GLB winner-take-all dedup removes ~40-60% overlap, so actual ~half.
     #
-    # max_target: frames fed to GPU (capped at ~500 to stay under 24GB VRAM)
-    # max_keyframes: frames kept in final GLB after temporal subsampling
-    # conf_pct: confidence percentile cutoff (0=keep all, 10=drop bottom 10%)
-    # max_keyframes: strict cap on GLB frames to keep file size manageable
+    # max_target and max_keyframes are frame caps; stride controls spatial density.
+    # Confidence filtering remains a user setting and is not duration-dependent.
 
     if video_duration < 10:
-        max_target, stride, max_keyframes, conf_pct = 300, 1, 60, 0
+        max_target, stride, max_keyframes = 300, 1, 60
     elif video_duration < 20:
-        max_target, stride, max_keyframes, conf_pct = 400, 1, 80, 3
+        max_target, stride, max_keyframes = 400, 1, 80
     elif video_duration < 30:
-        max_target, stride, max_keyframes, conf_pct = 450, 1, 100, 5
+        max_target, stride, max_keyframes = 450, 1, 100
     elif video_duration < 45:
-        max_target, stride, max_keyframes, conf_pct = 500, 2, 80, 8
+        max_target, stride, max_keyframes = 500, 2, 80
     elif video_duration < 60:
-        max_target, stride, max_keyframes, conf_pct = 500, 2, 100, 8
+        max_target, stride, max_keyframes = 500, 2, 100
     elif video_duration < 90:
-        max_target, stride, max_keyframes, conf_pct = 550, 2, 120, 10
+        max_target, stride, max_keyframes = 550, 2, 120
     elif video_duration < 150:
-        max_target, stride, max_keyframes, conf_pct = 600, 2, 150, 12
+        max_target, stride, max_keyframes = 600, 2, 150
     else:
-        max_target, stride, max_keyframes, conf_pct = 600, 2, 180, 12
+        max_target, stride, max_keyframes = 600, 2, 180
+    conf_pct = _clamp_conf_percentile(settings.get("conf_threshold", 1.5))
 
     desired_fps = fps
     interval = max(1, round(src_fps / desired_fps))
@@ -285,7 +316,7 @@ def process_video(video_path: str, settings: dict, job_id: str):
         vis_pred["world_points_from_depth"] = world_pts
 
     _update_status(job_id, "processing", 0.85, "导出GLB模型...")
-    from lingbot_map.vis.glb_export import predictions_to_glb
+    from lingbot_map.vis.glb_export import compute_scene_alignment, predictions_to_glb
 
     stride = settings.get("_dynamic_stride", 2)
     max_kf = settings.get("_max_keyframes", 50)
@@ -316,6 +347,14 @@ def process_video(video_path: str, settings: dict, job_id: str):
         nf = vis_pred_sub.get("depth", vis_pred.get("depth", np.zeros(1))).shape[0]
         logger.info(f"Temporal subsample: {num_frames_full} keyframes → {nf} (step={kf_step})")
 
+    # Compute the alignment from the exact temporally-subsampled extrinsics that
+    # predictions_to_glb consumes, then share it with the Mesh artifact.
+    selected_extrinsics = np.asarray(vis_pred_sub["extrinsic"])
+    extrinsics_4x4 = np.zeros((len(selected_extrinsics), 4, 4), dtype=selected_extrinsics.dtype)
+    extrinsics_4x4[:, :3, :4] = selected_extrinsics
+    extrinsics_4x4[:, 3, 3] = 1.0
+    alignment_matrix = compute_scene_alignment(extrinsics_4x4)
+
     glb_path = os.path.join(tmpdir, "output.glb")
     scene = predictions_to_glb(vis_pred_sub, conf_thres=conf_pct_val, show_cam=True, mask_sky=False)
     scene.export(glb_path)
@@ -336,10 +375,12 @@ def process_video(video_path: str, settings: dict, job_id: str):
     logger.info(f"GLB exported: {size_mb:.1f} MB, {num_frames} frames, elapsed={elapsed:.1f}s (total={total_elapsed:.0f}s)")
 
     settings["_num_frames"] = num_frames
+    settings["_artifact_keyframes"] = len(selected_extrinsics)
     settings["_total_elapsed"] = total_elapsed
     settings["_num_points"] = total_pts
+    settings["_artifact_metadata"] = _artifact_metadata(settings)
 
-    return glb_data, vis_pred_sub, conf_pct_val
+    return glb_data, vis_pred_sub, conf_pct_val, alignment_matrix
 
 def poll_and_process():
     """Main loop: poll for pending jobs, process them, upload results."""
@@ -424,20 +465,38 @@ def poll_and_process():
                 _update_status(job_id, "processing", 0.1)
 
                 # Run inference and export the point cloud before starting Mesh reconstruction.
-                glb_data, mesh_inputs, mesh_conf_pct = process_video(video_tmp, settings, job_id)
+                glb_data, mesh_inputs, mesh_conf_pct, alignment_matrix = process_video(
+                    video_tmp, settings, job_id
+                )
                 os.unlink(video_tmp)
 
                 _update_status(job_id, "processing", 0.9, "上传点云模型...")
                 _upload_result(job_id, glb_data)
                 point_cloud_uploaded = True
 
-                _update_status(job_id, "processing", 0.92, "正在生成 Mesh 模型...")
+                _update_status(
+                    job_id,
+                    "processing",
+                    0.92,
+                    "正在生成 Mesh 模型...",
+                    num_frames=settings.get("_num_frames", 0),
+                    num_points=settings.get("_num_points", 0),
+                    processing_time_secs=settings.get("_total_elapsed", 0),
+                    artifact_metadata=settings.get("_artifact_metadata"),
+                )
                 try:
                     from mesh_builder import build_mesh
                 except ImportError:
                     from gpu_worker.mesh_builder import build_mesh
+                mesh_inputs["alignment_matrix"] = alignment_matrix
                 with tempfile.TemporaryDirectory() as mesh_tmpdir:
                     mesh_result = build_mesh(mesh_inputs, mesh_conf_pct, mesh_tmpdir)
+                if mesh_result.success:
+                    if not mesh_result.stats.get("alignment_applied"):
+                        raise RuntimeError("Mesh builder did not apply the artifact alignment matrix")
+                    mesh_result.stats["glb_bytes"] = len(mesh_result.data)
+                else:
+                    mesh_result.stats["alignment_applied"] = False
                 settings["_mesh_stats"] = mesh_result.stats
                 del mesh_inputs
 
@@ -456,6 +515,8 @@ def poll_and_process():
                         num_frames=nf,
                         processing_time_secs=te,
                         num_points=np_pts,
+                        artifact_metadata=settings.get("_artifact_metadata"),
+                        mesh_stats=mesh_stats,
                     )
                     logger.warning("Job %s completed with point cloud only: %s", job_id, mesh_error)
                     mesh_data = b""
@@ -472,6 +533,8 @@ def poll_and_process():
                         num_frames=nf,
                         processing_time_secs=te,
                         num_points=np_pts,
+                        artifact_metadata=settings.get("_artifact_metadata"),
+                        mesh_stats=mesh_stats,
                     )
                     logger.info(
                         "Job %s completed (point cloud %.1f MB, mesh %.1f MB, %s)",
@@ -503,6 +566,8 @@ def poll_and_process():
                         num_frames=partial_stats.get("_num_frames", 0),
                         num_points=partial_stats.get("_num_points", 0),
                         processing_time_secs=partial_stats.get("_total_elapsed", 0),
+                        artifact_metadata=partial_stats.get("_artifact_metadata"),
+                        mesh_stats=partial_stats.get("_mesh_stats"),
                     )
                 except Exception:
                     pass
@@ -518,11 +583,18 @@ def poll_and_process():
 
 
 def _update_status(job_id: str, status: str, progress: float, detail: str = "",
-                   num_frames: int = 0, num_points: int = 0, processing_time_secs: float = 0):
+                   num_frames: int = 0, num_points: int = 0,
+                   processing_time_secs: float = 0,
+                   artifact_metadata: dict | None = None,
+                   mesh_stats: dict | None = None):
     payload = {"status": status, "progress": progress, "detail": detail,
                "error_message": detail if status in ("failed", "partial") else "",
                "num_frames": int(num_frames), "num_points": int(num_points),
                "processing_time_secs": float(processing_time_secs)}
+    if artifact_metadata is not None:
+        payload["artifact_metadata"] = artifact_metadata
+    if mesh_stats is not None:
+        payload["mesh_stats"] = mesh_stats
     data = json.dumps(payload).encode()
     req = urllib.request.Request(
         f"{BACKEND_URL}/api/v1/gpu/status/{job_id}",

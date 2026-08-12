@@ -1,3 +1,4 @@
+import json
 import os
 import tempfile
 import unittest
@@ -6,7 +7,7 @@ from unittest import mock
 
 from fastapi import HTTPException
 
-from app.api.gpu import _validate_glb, _write_atomic
+from app.api.gpu import _merge_status_settings, _validate_glb, _write_atomic
 from app.api.jobs import _job_to_response
 
 
@@ -74,6 +75,129 @@ class GpuUploadValidationTests(unittest.TestCase):
         self.assertEqual(response["status"], "processing")
         self.assertTrue(response["point_cloud_available"])
         self.assertFalse(response["mesh_available"])
+
+    def test_status_metadata_persists_under_internal_settings_keys(self):
+        settings = json.loads(_merge_status_settings(
+            '{"fps": 10, "file_name": "input.mp4"}',
+            "completed",
+            {
+                "detail": "重建完成",
+                "artifact_metadata": {"version": 2, "alignment": "world"},
+                "mesh_stats": {"mesh_triangles": 321},
+            },
+        ))
+
+        self.assertEqual(settings["fps"], 10)
+        self.assertEqual(settings["file_name"], "input.mp4")
+        self.assertEqual(
+            settings["_artifact_metadata"],
+            {"version": 2, "alignment": "world"},
+        )
+        self.assertEqual(settings["_mesh_stats"], {"mesh_triangles": 321})
+
+    def test_completed_status_clears_stale_mesh_state(self):
+        settings = json.loads(_merge_status_settings(
+            json.dumps({
+                "fps": 10,
+                "_mesh_error": "old failure",
+                "_mesh_stats": {"mesh_triangles": 12},
+                "_artifact_metadata": {"version": 1},
+            }),
+            "completed",
+            {"detail": "重建完成"},
+        ))
+
+        self.assertNotIn("_mesh_error", settings)
+        self.assertNotIn("_mesh_stats", settings)
+        self.assertEqual(settings["_artifact_metadata"], {"version": 1})
+
+    def test_partial_status_preserves_artifact_metadata_and_updates_mesh_state(self):
+        settings = json.loads(_merge_status_settings(
+            json.dumps({
+                "fps": 10,
+                "_artifact_metadata": {"version": 1},
+                "_mesh_stats": {"mesh_triangles": 12},
+            }),
+            "partial",
+            {
+                "detail": "Mesh 生成失败: no surface",
+                "mesh_stats": {"alignment_applied": False},
+            },
+        ))
+
+        self.assertEqual(settings["_artifact_metadata"], {"version": 1})
+        self.assertEqual(settings["_mesh_stats"], {"alignment_applied": False})
+        self.assertEqual(settings["_mesh_error"], "no surface")
+
+    def test_partial_status_clears_stale_mesh_stats_when_payload_omits_them(self):
+        settings = json.loads(_merge_status_settings(
+            json.dumps({
+                "_artifact_metadata": {"version": 1},
+                "_mesh_stats": {"mesh_triangles": 12},
+            }),
+            "partial",
+            {"detail": "Mesh 生成失败: no surface"},
+        ))
+
+        self.assertEqual(settings["_artifact_metadata"], {"version": 1})
+        self.assertNotIn("_mesh_stats", settings)
+
+    def test_job_response_exposes_persisted_metadata(self):
+        job = SimpleNamespace(
+            id="job-metadata",
+            status="completed",
+            progress=1.0,
+            settings=json.dumps({
+                "fps": 10,
+                "_artifact_metadata": {"version": 2},
+                "_mesh_stats": {"mesh_triangles": 321},
+            }),
+            result_path=None,
+            error_message=None,
+            num_frames=1,
+            num_points=10,
+            processing_time_secs=1.0,
+            created_at=None,
+            updated_at=None,
+        )
+
+        response = _job_to_response(job)
+
+        self.assertEqual(response["artifact_metadata"], {"version": 2})
+        self.assertEqual(response["mesh_stats"], {"mesh_triangles": 321})
+
+    def test_legacy_job_response_returns_null_metadata(self):
+        job = SimpleNamespace(
+            id="legacy-job",
+            status="completed",
+            progress=1.0,
+            settings='{"fps": 10}',
+            result_path=None,
+            error_message=None,
+            num_frames=1,
+            num_points=10,
+            processing_time_secs=1.0,
+            created_at=None,
+            updated_at=None,
+        )
+
+        response = _job_to_response(job)
+
+        self.assertIsNone(response["artifact_metadata"])
+        self.assertIsNone(response["mesh_stats"])
+
+    def test_legacy_invalid_settings_accept_status_metadata(self):
+        settings = json.loads(_merge_status_settings(
+            "not-json",
+            "completed",
+            {
+                "artifact_metadata": {"version": 2},
+                "mesh_stats": {"mesh_triangles": 321},
+            },
+        ))
+
+        self.assertEqual(settings["_artifact_metadata"], {"version": 2})
+        self.assertEqual(settings["_mesh_stats"], {"mesh_triangles": 321})
 
 
 if __name__ == "__main__":

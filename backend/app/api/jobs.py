@@ -13,6 +13,9 @@ from sqlalchemy import select, desc
 router = APIRouter(prefix="/api/v1")
 logger = logging.getLogger(__name__)
 
+_ARTIFACT_METADATA_KEY = "_artifact_metadata"
+_MESH_STATS_KEY = "_mesh_stats"
+
 
 @router.post("/jobs/upload", response_model=dict)
 async def upload_job(
@@ -126,6 +129,8 @@ def _job_to_response(job: Job) -> dict:
     point_cloud_available = os.path.isfile(os.path.join(job_dir, "result.glb"))
     mesh_available = os.path.isfile(os.path.join(job_dir, "result_mesh.glb"))
     mesh_error = settings.get("_mesh_error") if settings else None
+    artifact_metadata = settings.get(_ARTIFACT_METADATA_KEY) if settings else None
+    mesh_stats = settings.get(_MESH_STATS_KEY) if settings else None
     return {
         "id": job.id,
         "status": job.status,
@@ -135,6 +140,8 @@ def _job_to_response(job: Job) -> dict:
         "point_cloud_available": point_cloud_available,
         "mesh_available": mesh_available,
         "mesh_error": mesh_error,
+        "artifact_metadata": artifact_metadata,
+        "mesh_stats": mesh_stats,
         "error_message": job.error_message,
         "num_frames": job.num_frames,
         "num_points": job.num_points,

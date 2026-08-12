@@ -16,6 +16,9 @@ from app.models.job import Job
 router = APIRouter(prefix="/api/v1/gpu")
 logger = logging.getLogger(__name__)
 
+_ARTIFACT_METADATA_KEY = "_artifact_metadata"
+_MESH_STATS_KEY = "_mesh_stats"
+
 GPU_SECRET = os.environ.get("GPU_SECRET", "").strip()
 
 
@@ -51,6 +54,63 @@ def _write_atomic(path: str, data: bytes) -> None:
     finally:
         if os.path.exists(temp_path):
             os.unlink(temp_path)
+
+
+def _merge_status_settings(settings_json: str | None, status: str, data: dict) -> str | None:
+    try:
+        job_settings = json.loads(settings_json or "{}")
+    except (json.JSONDecodeError, TypeError):
+        job_settings = {}
+    if not isinstance(job_settings, dict):
+        job_settings = {}
+
+    changed = False
+    detail = data.get("detail", "")
+    if detail:
+        job_settings["_detail"] = detail
+        changed = True
+
+    if status == "partial":
+        if detail:
+            job_settings["_mesh_error"] = (
+                detail.removeprefix("Mesh 生成失败:").strip()
+                if detail.startswith("Mesh 生成失败:")
+                else detail
+            )
+            changed = True
+    elif status == "failed" and detail.startswith("Mesh 生成失败:"):
+        job_settings["_mesh_error"] = detail.removeprefix("Mesh 生成失败:").strip()
+        changed = True
+    elif status == "completed":
+        if "_mesh_error" in job_settings:
+            job_settings.pop("_mesh_error")
+            changed = True
+
+    for payload_key, settings_key in (
+        ("artifact_metadata", _ARTIFACT_METADATA_KEY),
+        ("mesh_stats", _MESH_STATS_KEY),
+    ):
+        if payload_key in data:
+            if data[payload_key] is None:
+                if settings_key in job_settings:
+                    job_settings.pop(settings_key)
+                    changed = True
+            else:
+                job_settings[settings_key] = data[payload_key]
+                changed = True
+
+    if status == "completed" and "mesh_stats" not in data:
+        if _MESH_STATS_KEY in job_settings:
+            job_settings.pop(_MESH_STATS_KEY)
+            changed = True
+    elif status == "partial" and "mesh_stats" not in data:
+        if _MESH_STATS_KEY in job_settings:
+            job_settings.pop(_MESH_STATS_KEY)
+            changed = True
+
+    if not changed:
+        return settings_json
+    return json.dumps(job_settings, ensure_ascii=False)
 
 
 @router.get("/video/{job_id}", dependencies=[Depends(_verify_gpu)])
@@ -109,24 +169,7 @@ async def update_status(job_id: str, data: dict = Body(...)):
         if data.get("processing_time_secs") is not None:
             job.processing_time_secs = data["processing_time_secs"]
 
-        detail = data.get("detail", "")
-        if detail:
-            try:
-                job_settings = json.loads(job.settings or "{}")
-            except Exception:
-                job_settings = {}
-            job_settings["_detail"] = detail
-            if job.status == "partial":
-                job_settings["_mesh_error"] = (
-                    detail.removeprefix("Mesh 生成失败:").strip()
-                    if detail.startswith("Mesh 生成失败:")
-                    else detail
-                )
-            elif job.status == "failed" and detail.startswith("Mesh 生成失败:"):
-                job_settings["_mesh_error"] = detail.removeprefix("Mesh 生成失败:").strip()
-            elif job.status == "completed":
-                job_settings.pop("_mesh_error", None)
-            job.settings = json.dumps(job_settings, ensure_ascii=False)
+        job.settings = _merge_status_settings(job.settings, job.status, data)
         await session.commit()
     return {"ok": True}
 

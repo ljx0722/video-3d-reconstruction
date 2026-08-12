@@ -1,11 +1,17 @@
 import { Suspense, useState, useCallback, useRef, useEffect, useMemo } from 'react';
 import { Canvas, useFrame, useThree } from '@react-three/fiber';
-import { TrackballControls, GizmoHelper, GizmoViewcube, Grid, Html, Line, OrthographicCamera, PerspectiveCamera } from '@react-three/drei';
+import { TrackballControls, GizmoHelper, GizmoViewcube, Grid, Html, Line, OrthographicCamera, PerspectiveCamera, useGLTF } from '@react-three/drei';
 import * as THREE from 'three';
 import { getResultUrl, getMeshUrl } from '../api/client';
 import ModelLoader from './ModelLoader';
-import EDLEffect from './EDLEffect';
+import BloomEffect from './EDLEffect';
 import type { BoxClip } from './Toolbar';
+
+export interface ActiveBounds {
+  box: THREE.Box3;
+  center: THREE.Vector3;
+  radius: number;
+}
 
 interface Props {
   jobId: string;
@@ -16,12 +22,16 @@ interface Props {
   boxClip?: BoxClip;
   showAxes?: boolean;
   orthographic?: boolean;
-  splatMode?: boolean;
   showGrid?: boolean;
   showTrajectory?: boolean;
-  edlStrength?: number;
+  bloomStrength?: number;
+  exposure?: number;
+  fitToken?: number;
+  edgeThreshold?: number;
+  colorsAreLinear?: boolean;
+  editedPointData?: { pos: Float32Array; col: Float32Array } | null;
   orbitTarget?: [number, number, number];
-  viewMode?: 'points' | 'gaussian' | 'mesh' | 'wireframe';
+  viewMode?: string;
   meshAvailable?: boolean;
   orientMarkers?: THREE.Vector3[] | null;
   orientPlane?: { normal: THREE.Vector3; center: THREE.Vector3 } | null;
@@ -298,12 +308,19 @@ function CameraTrail({ positions }: { positions: Float32Array }) {
   );
 }
 
-function AdaptiveControls({ target }: { target: [number, number, number] }) {
+function AdaptiveControls({ target, syncToken }: { target: THREE.Vector3; syncToken: string }) {
   const ref = useRef<any>(null);
+  const lastSyncToken = useRef('');
 
   useFrame(({ camera, invalidate }) => {
     if (ref.current) {
-      const d = camera.position.length();
+      if (lastSyncToken.current !== syncToken) {
+        ref.current.target.copy(target);
+        lastSyncToken.current = syncToken;
+      } else {
+        target.copy(ref.current.target);
+      }
+      const d = camera.position.distanceTo(target);
       ref.current.rotateSpeed = Math.max(0.8, Math.min(6, d * 0.7));
       ref.current.zoomSpeed = Math.max(0.15, Math.min(2.5, d * 0.12));
       ref.current.panSpeed = Math.max(0.15, Math.min(3, d * 0.25));
@@ -311,12 +328,7 @@ function AdaptiveControls({ target }: { target: [number, number, number] }) {
     invalidate(); // demand loop trigger
   });
 
-  return (
-    <TrackballControls
-      ref={ref}
-      target={target}
-    />
-  );
+  return <TrackballControls ref={ref} />;
 }
 
 function OrientMarkers({ markers, plane }: { markers: THREE.Vector3[] | null; plane: { normal: THREE.Vector3; center: THREE.Vector3 } | null }) {
@@ -356,7 +368,7 @@ function OrientMarkers({ markers, plane }: { markers: THREE.Vector3[] | null; pl
   );
 }
 
-function KeyboardFly() {
+function KeyboardFly({ target }: { target: THREE.Vector3 }) {
   const keys = useRef<Record<string, boolean>>({});
 
   useEffect(() => {
@@ -371,13 +383,12 @@ function KeyboardFly() {
     const k = keys.current;
     if (k['Control'] || k['Alt'] || k['Meta']) return;
 
-    const target = new THREE.Vector3(0, 0, 0);
     const forward = new THREE.Vector3().subVectors(target, camera.position).normalize();
     const worldUp = new THREE.Vector3(0, 1, 0);
     const right = new THREE.Vector3().crossVectors(forward, worldUp).normalize();
     const up = new THREE.Vector3().crossVectors(right, forward).normalize();
 
-    const dist = camera.position.length();
+    const dist = camera.position.distanceTo(target);
     const moveSpeed = Math.max(0.04, dist * 0.005);
     const rotSpeed = 0.03;
 
@@ -405,20 +416,20 @@ function KeyboardFly() {
   return null;
 }
 
-function ViewPresetHandler({ onUpdateClip, activeBox }: { onUpdateClip?: (c: BoxClip) => void; activeBox: BoxClip }) {
+function ViewPresetHandler({ onUpdateClip, activeBox, target }: { onUpdateClip?: (c: BoxClip) => void; activeBox: BoxClip; target: THREE.Vector3 }) {
   const { camera } = useThree();
 
   useEffect(() => {
     const h = (e: Event) => {
       const { pos } = (e as CustomEvent).detail as { pos: [number,number,number] };
-      const dist = camera.position.length();
+      const dist = Math.max(0.01, camera.position.distanceTo(target));
       const dir = new THREE.Vector3(pos[0], pos[1], pos[2]).normalize();
-      camera.position.copy(dir.multiplyScalar(dist));
-      camera.lookAt(0, 0, 0);
+      camera.position.copy(target).add(dir.multiplyScalar(dist));
+      camera.lookAt(target);
     };
     window.addEventListener('view-preset', h);
     return () => window.removeEventListener('view-preset', h);
-  }, [camera]);
+  }, [camera, target]);
 
   useEffect(() => {
     const h = (e: Event) => {
@@ -461,6 +472,65 @@ function CameraRefReporter({ onCameraRef }: { onCameraRef?: (cam: THREE.Camera) 
   return null;
 }
 
+function RendererSettings({ exposure }: { exposure: number }) {
+  const gl = useThree(state => state.gl);
+
+  useEffect(() => {
+    gl.toneMapping = THREE.ACESFilmicToneMapping;
+    gl.outputColorSpace = THREE.SRGBColorSpace;
+    gl.toneMappingExposure = exposure;
+  }, [gl, exposure]);
+
+  return null;
+}
+
+function CameraFitter({ bounds, artifactKey, orthographic, fitToken, target }: { bounds: ActiveBounds | null; artifactKey: string; orthographic: boolean; fitToken: number; target: THREE.Vector3 }) {
+  const { camera, size } = useThree();
+  const lastFitRef = useRef<{ artifactKey: string; orthographic: boolean; fitToken: number } | null>(null);
+
+  useEffect(() => {
+    if (!bounds) return;
+    const lastFit = lastFitRef.current;
+    if (lastFit && lastFit.artifactKey === artifactKey && lastFit.orthographic === orthographic && lastFit.fitToken === fitToken) return;
+    lastFitRef.current = { artifactKey, orthographic, fitToken };
+
+    const center = bounds.center;
+    const boundsSize = bounds.box.getSize(new THREE.Vector3());
+    const radius = Math.max(bounds.radius, 0.01);
+    const aspect = Math.max(size.width / Math.max(size.height, 1), 0.01);
+    const previousDirection = camera.position.clone().sub(target);
+    if (previousDirection.lengthSq() < 1e-8) previousDirection.set(2, 1, 3);
+    previousDirection.normalize();
+
+    target.copy(center);
+
+    if (camera instanceof THREE.PerspectiveCamera) {
+      const verticalFov = THREE.MathUtils.degToRad(camera.fov);
+      const horizontalFov = 2 * Math.atan(Math.tan(verticalFov / 2) * aspect);
+      const limitingFov = Math.min(verticalFov, horizontalFov);
+      const distance = radius / Math.sin(Math.max(limitingFov / 2, 0.01)) * 1.15;
+      camera.position.copy(center).add(previousDirection.multiplyScalar(distance));
+      camera.near = Math.max(0.001, distance - radius * 2.5);
+      camera.far = Math.max(camera.near + 1, distance + radius * 4);
+    } else if (camera instanceof THREE.OrthographicCamera) {
+      const halfHeight = Math.max(boundsSize.y / 2, boundsSize.x / (2 * aspect), radius * 0.5, 0.01) * 1.15;
+      camera.position.copy(center).add(previousDirection.multiplyScalar(Math.max(radius * 2.5, 1)));
+      camera.left = -halfHeight * aspect;
+      camera.right = halfHeight * aspect;
+      camera.top = halfHeight;
+      camera.bottom = -halfHeight;
+      camera.zoom = 1;
+      camera.near = 0.001;
+      camera.far = Math.max(10, radius * 10);
+    }
+
+    camera.lookAt(center);
+    camera.updateProjectionMatrix();
+  }, [artifactKey, bounds, camera, fitToken, orthographic, size.height, size.width, target]);
+
+  return null;
+}
+
 function AxesHelper3D() {
   return (
     <group>
@@ -473,52 +543,97 @@ function AxesHelper3D() {
 
 export default function ViewerCanvas({
   jobId, pointSize, opacity = 1, onPointsReady, onMeshReady,
-  boxClip, showAxes, orthographic, splatMode, showGrid, showTrajectory = true,
-  edlStrength = 0.4, orbitTarget = [0, 0, 0], viewMode = 'points', meshAvailable = false,
+  boxClip, showAxes, orthographic = false, showGrid, showTrajectory = true,
+  bloomStrength = 0, exposure = 1, fitToken = 0, edgeThreshold, colorsAreLinear = false, editedPointData = null, orbitTarget = [0, 0, 0], viewMode = 'points', meshAvailable = false,
   orientMarkers = null, orientPlane = null, onUpdateClip,
   lassoEnabled = false, annotations = [], onCameraRef,
 }: Props) {
   const [camPositions, setCamPositions] = useState<Float32Array | null>(null);
+  const [activeBounds, setActiveBounds] = useState<{ url: string; bounds: ActiveBounds } | null>(null);
+  const targetRef = useRef(new THREE.Vector3(...orbitTarget));
   const defaultBox: BoxClip = boxClip || { enabled: false, min: [-1, -0.5, -1], max: [1, 0.5, 1] };
   const activeBox = boxClip || defaultBox;
 
-  const handleCameras = useCallback((pos: Float32Array) => setCamPositions(pos), []);
+  useEffect(() => {
+    targetRef.current.set(...orbitTarget);
+  }, [orbitTarget]);
 
-  const threeClipPlanes: THREE.Plane[] = [];
-  if (activeBox.enabled) {
-    threeClipPlanes.push(new THREE.Plane(new THREE.Vector3( 1,0,0), -activeBox.min[0]));
-    threeClipPlanes.push(new THREE.Plane(new THREE.Vector3(-1,0,0),  activeBox.max[0]));
-    threeClipPlanes.push(new THREE.Plane(new THREE.Vector3( 0,1,0), -activeBox.min[1]));
-    threeClipPlanes.push(new THREE.Plane(new THREE.Vector3( 0,-1,0), activeBox.max[1]));
-    threeClipPlanes.push(new THREE.Plane(new THREE.Vector3( 0,0,1), -activeBox.min[2]));
-    threeClipPlanes.push(new THREE.Plane(new THREE.Vector3( 0,0,-1),activeBox.max[2]));
-  }
+  const normalizedViewMode = useMemo(() => {
+    if (viewMode === 'splat' || viewMode === 'gaussian-splat' || viewMode === 'gaussianSplat') return 'gaussian';
+    if (viewMode === 'pointcloud' || viewMode === 'point-cloud') return 'points';
+    if (viewMode === 'solid') return 'mesh';
+    return viewMode;
+  }, [viewMode]) as 'points' | 'gaussian' | 'mesh' | 'wireframe';
+
+  const artifactKey = normalizedViewMode === 'mesh' || normalizedViewMode === 'wireframe' ? 'mesh' : 'points';
+  const pointUrl = getResultUrl(jobId);
+  const meshUrl = getMeshUrl(jobId);
+  const modelUrl = artifactKey === 'mesh' && meshAvailable ? meshUrl : pointUrl;
+  const handleCameras = useCallback((pos: Float32Array) => setCamPositions(pos), []);
+  const handleBoundsReady = useCallback((bounds: ActiveBounds) => {
+    const normalizedBounds: ActiveBounds = {
+      box: bounds.box.clone(),
+      center: bounds.center.clone(),
+      radius: bounds.radius,
+    };
+    setActiveBounds({ url: modelUrl, bounds: normalizedBounds });
+  }, [modelUrl]);
+
+  useEffect(() => () => {
+    useGLTF.clear(pointUrl);
+    useGLTF.clear(meshUrl);
+  }, [meshUrl, pointUrl]);
+
+  useEffect(() => {
+    setActiveBounds(null);
+  }, [modelUrl]);
+
+  const threeClipPlanes = useMemo(() => {
+    if (!activeBox.enabled) return [];
+    return [
+      new THREE.Plane(new THREE.Vector3( 1,0,0), -activeBox.min[0]),
+      new THREE.Plane(new THREE.Vector3(-1,0,0),  activeBox.max[0]),
+      new THREE.Plane(new THREE.Vector3( 0,1,0), -activeBox.min[1]),
+      new THREE.Plane(new THREE.Vector3( 0,-1,0), activeBox.max[1]),
+      new THREE.Plane(new THREE.Vector3( 0,0,1), -activeBox.min[2]),
+      new THREE.Plane(new THREE.Vector3( 0,0,-1), activeBox.max[2]),
+    ];
+  }, [activeBox.enabled, activeBox.max, activeBox.min]);
 
   return (
     <Canvas
       className="!absolute inset-0"
-      gl={{ preserveDrawingBuffer: true, antialias: false, localClippingEnabled: true }}
+      gl={{ preserveDrawingBuffer: true, antialias: false, localClippingEnabled: true, toneMapping: THREE.ACESFilmicToneMapping, outputColorSpace: THREE.SRGBColorSpace }}
       frameloop="always"
-      style={{ background: '#0a0a0f' }}
+      style={{ background: '#101923' }}
     >
+      <color attach="background" args={['#101923']} />
+      <RendererSettings exposure={exposure} />
       <PerspectiveCamera makeDefault={!orthographic} position={[2, 1, 3]} fov={50} near={0.01} far={200} />
       <OrthographicCamera makeDefault={orthographic} position={[2, 1, 3]} zoom={80} near={0.01} far={200} />
       <CameraRefReporter onCameraRef={onCameraRef} />
+      <CameraFitter bounds={activeBounds?.url === modelUrl ? activeBounds.bounds : null} artifactKey={modelUrl} orthographic={orthographic} fitToken={fitToken} target={targetRef.current} />
 
-      <ambientLight intensity={0.6} />
-      <directionalLight position={[5, 5, 5]} intensity={0.4} />
+      <ambientLight intensity={0.35} />
+      <hemisphereLight args={['#b9d4ff', '#182231', 0.6]} />
+      <directionalLight position={[5, 7, 6]} intensity={2.2} color="#fff3df" />
+      <directionalLight position={[-5, 3, 4]} intensity={1.1} color="#b9d7ff" />
+      <directionalLight position={[1, 5, -6]} intensity={1.5} color="#d9e7ff" />
 
       <Suspense fallback={<LoadingFallback />}>
         <ModelLoader
-          url={(viewMode === 'mesh' || viewMode === 'wireframe') && meshAvailable ? getMeshUrl(jobId) : getResultUrl(jobId)}
+          url={modelUrl}
           pointSize={pointSize}
           opacity={opacity}
           onPointsReady={onPointsReady as any}
           onMeshReady={onMeshReady as any}
           onCameraPositions={handleCameras}
+          onBoundsReady={handleBoundsReady}
+          editedPointData={artifactKey === 'points' ? editedPointData : null}
+          edgeThreshold={edgeThreshold}
+          colorsAreLinear={colorsAreLinear}
           clipPlanes={threeClipPlanes}
-          splatMode={splatMode || viewMode === 'gaussian'}
-          viewMode={viewMode}
+          viewMode={normalizedViewMode}
         />
       </Suspense>
 
@@ -534,11 +649,14 @@ export default function ViewerCanvas({
         <GizmoViewcube faces={['右', '左', '上', '下', '前', '后']} color="#1e293b" hoverColor="#3b82f6" textColor="#ffffff" strokeColor="#64748b" />
       </GizmoHelper>
 
-      <ViewPresetHandler onUpdateClip={onUpdateClip} activeBox={activeBox} />
+      <ViewPresetHandler onUpdateClip={onUpdateClip} activeBox={activeBox} target={targetRef.current} />
 
-      <AdaptiveControls target={orbitTarget} />
+      <AdaptiveControls
+        target={targetRef.current}
+        syncToken={`${modelUrl}:${activeBounds?.url === modelUrl ? 'ready' : 'loading'}:${fitToken}:${orthographic}:${orbitTarget.join(',')}`}
+      />
 
-      <KeyboardFly />
+      <KeyboardFly target={targetRef.current} />
 
       <OrientMarkers markers={orientMarkers} plane={orientPlane} />
 
@@ -546,7 +664,7 @@ export default function ViewerCanvas({
 
       <AnnotationLabels annotations={annotations} />
 
-      <EDLEffect edlStrength={edlStrength} />
+      <BloomEffect bloomStrength={bloomStrength} />
     </Canvas>
   );
 }

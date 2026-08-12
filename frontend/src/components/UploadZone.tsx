@@ -9,6 +9,7 @@ export default function UploadZone() {
   const [uploadSpeed, setUploadSpeed] = useState<string>('');
   const [error, setError] = useState<string | null>(null);
   const [fps, setFps] = useState(10);
+  const [confidencePercentile, setConfidencePercentile] = useState(5);
   const [totalMb, setTotalMb] = useState(0);
   const startTime = useRef(0);
   const navigate = useNavigate();
@@ -21,7 +22,7 @@ export default function UploadZone() {
     setTotalMb(Math.round(file.size / (1024 * 1024)));
     startTime.current = Date.now();
     try {
-      const { id } = await uploadVideo(file, { fps, mode: 'streaming', conf_threshold: 1.5 }, (pct, loaded) => {
+      const { id } = await uploadVideo(file, { fps, mode: 'streaming', conf_threshold: confidencePercentile }, (pct, loaded) => {
         setProgress(pct);
         if (loaded) {
           const elapsed = (Date.now() - startTime.current) / 1000;
@@ -39,7 +40,7 @@ export default function UploadZone() {
       setProgress(0);
       setUploadSpeed('');
     }
-  }, [fps, navigate]);
+  }, [confidencePercentile, fps, navigate]);
 
   const { getRootProps, getInputProps, isDragActive } = useDropzone({
     onDrop,
@@ -95,6 +96,17 @@ export default function UploadZone() {
         <div className="flex justify-between text-xs text-gray-600 mt-1">
           <span>1 fps（快速/低精度）</span>
           <span>30 fps（慢速/高精度）</span>
+        </div>
+      </div>
+
+      <div className="mt-3 p-4 bg-gray-900 rounded-lg">
+        <label className="text-sm text-gray-400">丢弃最低置信度点：{confidencePercentile}%</label>
+        <input type="range" min={0} max={20} step={1} value={confidencePercentile}
+          onChange={(e) => setConfidencePercentile(Number(e.target.value))}
+          className="w-full mt-2 accent-blue-500" />
+        <div className="flex justify-between text-xs text-gray-600 mt-1">
+          <span>0%（保留更多细节）</span>
+          <span>20%（更强去噪）</span>
         </div>
       </div>
     </div>

@@ -1,6 +1,13 @@
-import { useMemo, useEffect, useState } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useState } from 'react';
 import { useGLTF } from '@react-three/drei';
 import * as THREE from 'three';
+import { createPresentationMaterial, getPointMaterialProfile, srgbToLinear } from './rendering';
+
+interface ModelBounds {
+  center: THREE.Vector3;
+  radius: number;
+  box: THREE.Box3;
+}
 
 interface Props {
   url: string;
@@ -9,151 +16,371 @@ interface Props {
   onPointsReady?: (mesh: THREE.Points, count: number) => void;
   onMeshReady?: (mesh: THREE.Group) => void;
   onCameraPositions?: (positions: Float32Array) => void;
+  onBoundsReady?: (bounds: ModelBounds) => void;
+  editedPointData?: { pos: Float32Array; col: Float32Array } | null;
   clipPlanes?: THREE.Plane[];
-  splatMode?: boolean;
   viewMode?: 'points' | 'gaussian' | 'mesh' | 'wireframe';
+  edgeThreshold?: number;
+  colorsAreLinear?: boolean;
 }
 
-export default function ModelLoader({ url, pointSize, opacity = 1, onPointsReady, onMeshReady, onCameraPositions, clipPlanes, splatMode, viewMode = 'points' }: Props) {
+interface ExtractedMesh {
+  geometry: THREE.BufferGeometry;
+  sourceMaterials: readonly THREE.Material[];
+}
+
+interface Extraction {
+  pointGeometry: THREE.BufferGeometry | null;
+  meshes: readonly ExtractedMesh[];
+  cameraPositions: Float32Array;
+}
+
+const POINT_BUDGET = 2_000_000;
+const EDGE_COLOR = new THREE.Color('#6f89a3');
+const SRGB_TO_LINEAR_LUT = Float32Array.from({ length: 256 }, (_, index) => srgbToLinear(index / 255));
+
+function artifactColorToLinear(value: number, colorsAreLinear: boolean): number {
+  if (colorsAreLinear) return Math.max(0, Math.min(1, value));
+  return SRGB_TO_LINEAR_LUT[Math.min(255, Math.max(0, Math.round(value * 255)))];
+}
+
+function correctVertexColors(geometry: THREE.BufferGeometry, colorsAreLinear: boolean): void {
+  const color = geometry.getAttribute('color');
+  if (!color || color.itemSize < 3) return;
+
+  const corrected = new Float32Array(color.count * color.itemSize);
+  for (let index = 0; index < color.count; index += 1) {
+    const offset = index * color.itemSize;
+    corrected[offset] = artifactColorToLinear(color.getX(index), colorsAreLinear);
+    corrected[offset + 1] = artifactColorToLinear(color.getY(index), colorsAreLinear);
+    corrected[offset + 2] = artifactColorToLinear(color.getZ(index), colorsAreLinear);
+    if (color.itemSize > 3) corrected[offset + 3] = color.getW(index);
+  }
+  geometry.setAttribute('color', new THREE.BufferAttribute(corrected, color.itemSize));
+}
+
+function createMeshMaterial(
+  source: THREE.Material | undefined,
+  hasVertexColors: boolean,
+  clipPlanes: THREE.Plane[] | undefined,
+  polygonOffset: boolean,
+): THREE.MeshStandardMaterial {
+  const sourceMap = source instanceof THREE.MeshStandardMaterial && source.map ? source.map.clone() : null;
+  const material = createPresentationMaterial(hasVertexColors, sourceMap);
+  if (sourceMap) material.userData.ownedMap = sourceMap;
+  material.clippingPlanes = clipPlanes ?? [];
+  material.clipShadows = true;
+  material.polygonOffset = polygonOffset;
+  material.polygonOffsetFactor = polygonOffset ? 1 : 0;
+  material.polygonOffsetUnits = polygonOffset ? 1 : 0;
+  return material;
+}
+
+export default function ModelLoader({
+  url,
+  pointSize,
+  opacity = 1,
+  onPointsReady,
+  onMeshReady,
+  onCameraPositions,
+  onBoundsReady,
+  editedPointData,
+  clipPlanes,
+  viewMode = 'points',
+  edgeThreshold = 30,
+  colorsAreLinear = false,
+}: Props) {
   const { scene } = useGLTF(url);
   const [splatTex] = useState(() => {
-    const c = document.createElement('canvas');
-    c.width = c.height = 32;
-    const ctx = c.getContext('2d')!;
-    const g = ctx.createRadialGradient(16, 16, 0, 16, 16, 16);
-    g.addColorStop(0, 'rgba(255,255,255,1)');
-    g.addColorStop(0.4, 'rgba(255,255,255,0.6)');
-    g.addColorStop(0.8, 'rgba(255,255,255,0.1)');
-    g.addColorStop(1, 'rgba(255,255,255,0)');
-    ctx.fillStyle = g;
-    ctx.fillRect(0, 0, 32, 32);
-    return new THREE.CanvasTexture(c);
+    const canvas = document.createElement('canvas');
+    canvas.width = canvas.height = 32;
+    const context = canvas.getContext('2d')!;
+    const gradient = context.createRadialGradient(16, 16, 0, 16, 16, 16);
+    gradient.addColorStop(0, 'rgba(255,255,255,1)');
+    gradient.addColorStop(0.4, 'rgba(255,255,255,0.6)');
+    gradient.addColorStop(0.8, 'rgba(255,255,255,0.1)');
+    gradient.addColorStop(1, 'rgba(255,255,255,0)');
+    context.fillStyle = gradient;
+    context.fillRect(0, 0, 32, 32);
+
+    const texture = new THREE.CanvasTexture(canvas);
+    texture.name = 'ModelLoader gaussian radial texture';
+    texture.minFilter = THREE.LinearFilter;
+    texture.magFilter = THREE.LinearFilter;
+    texture.generateMipmaps = false;
+    return texture;
   });
 
-  const { points, meshes } = useMemo(() => {
-    const pcPos: number[] = [];
-    const pcCol: number[] = [];
-    const camPos: number[] = [];
-    const meshList: THREE.Mesh[] = [];
+  // Extraction is independent of presentation mode. Traverse a local hierarchy clone so
+  // matrixWorld can be updated without mutating the cached useGLTF scene or its resources.
+  const extraction = useMemo<Extraction>(() => {
+    const pointPositions: number[] = [];
+    const pointColors: number[] = [];
+    const cameraPositions: number[] = [];
+    const meshes: ExtractedMesh[] = [];
+    const worldPosition = new THREE.Vector3();
 
     try {
-      if (scene) scene.traverse((child: any) => {
-        // Skip non-standard children that might lack geometry
-        if (!child || typeof child !== 'object') return;
+      const extractionScene = scene.clone(true);
+      extractionScene.updateMatrixWorld(true);
+      extractionScene.traverse((child) => {
+        const renderable = child as THREE.Object3D & {
+          isMesh?: boolean;
+          geometry?: THREE.BufferGeometry;
+          material?: THREE.Material | THREE.Material[];
+        };
+        const geometry = renderable.geometry;
+        if (!geometry?.getAttribute) return;
 
-        if (child.isMesh) {
-          const geo = child.geometry as THREE.BufferGeometry | undefined;
-          if (geo && geo.index) {
-            const mesh = child as THREE.Mesh;
-            mesh.updateWorldMatrix(true, false);
-            const clone = mesh.clone();
-            clone.geometry = geo.clone();
-            clone.geometry.applyMatrix4(mesh.matrixWorld);
-            clone.position.set(0, 0, 0);
-            clone.quaternion.identity();
-            clone.scale.set(1, 1, 1);
-            clone.updateMatrix();
-            meshList.push(clone);
+        const position = geometry.getAttribute('position');
+        if (!position || position.count === 0) return;
+
+        if (renderable.isMesh) {
+          let clonedGeometry: THREE.BufferGeometry | null = null;
+          try {
+            // Cloning preserves either indexed or non-indexed topology. Baking matrixWorld
+            // keeps every mode detached from the source object's mutable transforms.
+            clonedGeometry = geometry.clone();
+            clonedGeometry.applyMatrix4(child.matrixWorld);
+            correctVertexColors(clonedGeometry, colorsAreLinear);
+            if (!clonedGeometry.getAttribute('normal')) clonedGeometry.computeVertexNormals();
+            clonedGeometry.computeBoundingBox();
+            clonedGeometry.computeBoundingSphere();
+
+            const sourceMaterials = Array.isArray(renderable.material)
+              ? [...renderable.material]
+              : renderable.material
+                ? [renderable.material]
+                : [];
+            meshes.push({ geometry: clonedGeometry, sourceMaterials });
+          } catch {
+            clonedGeometry?.dispose();
           }
           return;
         }
-        const geo = child.geometry as THREE.BufferGeometry | undefined;
-        if (!geo || !geo.getAttribute) return;
-        const pos = geo.getAttribute('position');
-        const col = geo.getAttribute('color');
-        if (!pos || pos.count === 0) return;
-        if (pos.count < 50) {
-          let cx = 0, cy = 0, cz = 0;
+
+        const color = geometry.getAttribute('color');
+        if (position.count < 50) {
+          let centerX = 0;
+          let centerY = 0;
+          let centerZ = 0;
           try {
-            for (let i = 0; i < pos.count; i++) { cx += pos.getX(i); cy += pos.getY(i); cz += pos.getZ(i); }
-            camPos.push(cx / pos.count, cy / pos.count, cz / pos.count);
-          } catch { /* skip corrupted camera geometry */ }
-        } else {
-          const total = pos.count;
-          const budget = 2000000;
-          const step = total > budget ? Math.ceil(total / budget) : 1;
-          try {
-            for (let i = 0; i < total; i += step) {
-              pcPos.push(pos.getX(i), pos.getY(i), pos.getZ(i));
-              pcCol.push(col ? col.getX(i) : 1, col ? col.getY(i) : 1, col ? col.getZ(i) : 1);
+            for (let index = 0; index < position.count; index += 1) {
+              worldPosition.fromBufferAttribute(position, index).applyMatrix4(child.matrixWorld);
+              centerX += worldPosition.x;
+              centerY += worldPosition.y;
+              centerZ += worldPosition.z;
             }
-          } catch { /* skip corrupted point geometry */ }
+            cameraPositions.push(
+              centerX / position.count,
+              centerY / position.count,
+              centerZ / position.count,
+            );
+          } catch {
+            // Skip malformed camera geometry while retaining the rest of the artifact.
+          }
+          return;
+        }
+
+        const step = position.count > POINT_BUDGET
+          ? Math.ceil(position.count / POINT_BUDGET)
+          : 1;
+        try {
+          for (let index = 0; index < position.count; index += step) {
+            worldPosition.fromBufferAttribute(position, index).applyMatrix4(child.matrixWorld);
+            pointPositions.push(worldPosition.x, worldPosition.y, worldPosition.z);
+            pointColors.push(
+              color ? artifactColorToLinear(color.getX(index), colorsAreLinear) : 1,
+              color ? artifactColorToLinear(color.getY(index), colorsAreLinear) : 1,
+              color ? artifactColorToLinear(color.getZ(index), colorsAreLinear) : 1,
+            );
+          }
+        } catch {
+          // Skip malformed point geometry while retaining the rest of the artifact.
         }
       });
-    } catch (err) {
-      console.warn('ModelLoader: scene traversal failed, using empty geometry', err);
+    } catch (error) {
+      console.warn('ModelLoader: scene traversal failed, using extracted data available so far', error);
     }
 
-    if (camPos.length > 0 && onCameraPositions) onCameraPositions(new Float32Array(camPos));
-
-    let pts: THREE.Points | null = null;
-    if (pcPos.length > 0) {
-      const geo = new THREE.BufferGeometry();
-      geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(pcPos), 3));
-      geo.setAttribute('color', new THREE.BufferAttribute(new Float32Array(pcCol), 3));
-      const isGaussian = splatMode || viewMode === 'gaussian';
-      const mat = new THREE.PointsMaterial({
-        size: isGaussian ? pointSize * 4 : pointSize, vertexColors: true, sizeAttenuation: true,
-        depthWrite: !isGaussian,
-        blending: isGaussian ? THREE.AdditiveBlending : THREE.NormalBlending,
-        transparent: true, opacity, clippingPlanes: clipPlanes || [], clipShadows: false,
-        map: isGaussian ? splatTex : null, depthTest: true,
-      });
-      pts = new THREE.Points(geo, mat);
+    let pointGeometry: THREE.BufferGeometry | null = null;
+    if (pointPositions.length > 0) {
+      pointGeometry = new THREE.BufferGeometry();
+      pointGeometry.setAttribute(
+        'position',
+        new THREE.BufferAttribute(new Float32Array(pointPositions), 3),
+      );
+      pointGeometry.setAttribute(
+        'color',
+        new THREE.BufferAttribute(new Float32Array(pointColors), 3),
+      );
+      pointGeometry.computeBoundingBox();
+      pointGeometry.computeBoundingSphere();
     }
 
-    return { points: pts, meshes: meshList };
-  }, [scene]);
+    return {
+      pointGeometry,
+      meshes,
+      cameraPositions: new Float32Array(cameraPositions),
+    };
+  }, [colorsAreLinear, scene]);
 
-  // Build mesh group when viewMode is mesh or wireframe
-  const meshGroup = useMemo(() => {
-    if (meshes.length === 0) return null;
-    const group = new THREE.Group();
-    meshes.forEach(m => {
-      if (viewMode === 'wireframe') {
-        const wGeo = new THREE.WireframeGeometry(m.geometry);
-        const wLine = new THREE.LineSegments(wGeo, new THREE.LineBasicMaterial({ color: '#3b82f6', transparent: true, opacity: 0.6 }));
-        group.add(wLine);
-        return;
-      }
-      const sourceMaterial = Array.isArray(m.material) ? m.material[0] : m.material;
-      const clonedMat = sourceMaterial instanceof THREE.MeshStandardMaterial
-        ? sourceMaterial.clone()
-        : new THREE.MeshStandardMaterial({ color: '#d1d5db', vertexColors: m.geometry.hasAttribute('color') });
-      clonedMat.clipShadows = true;
-      clonedMat.clippingPlanes = clipPlanes || [];
-      const clonedMesh = new THREE.Mesh(m.geometry, clonedMat);
-      group.add(clonedMesh);
+  useEffect(() => () => {
+    extraction.pointGeometry?.dispose();
+    extraction.meshes.forEach(({ geometry }) => geometry.dispose());
+  }, [extraction]);
+
+  useEffect(() => () => splatTex.dispose(), [splatTex]);
+
+  useEffect(() => {
+    if (onCameraPositions && extraction.cameraPositions.length > 0) {
+      onCameraPositions(extraction.cameraPositions.slice());
+    }
+  }, [extraction.cameraPositions, onCameraPositions]);
+
+  const isPointMode = viewMode === 'points' || viewMode === 'gaussian';
+  const pointProfile = getPointMaterialProfile(viewMode, pointSize, opacity);
+
+  const displayPointGeometry = useMemo(() => {
+    if (!extraction.pointGeometry) return null;
+    if (!editedPointData) return extraction.pointGeometry;
+    const geometry = new THREE.BufferGeometry();
+    geometry.setAttribute('position', new THREE.BufferAttribute(editedPointData.pos, 3));
+    geometry.setAttribute('color', new THREE.BufferAttribute(editedPointData.col, 3));
+    geometry.computeBoundingBox();
+    geometry.computeBoundingSphere();
+    return geometry;
+  }, [editedPointData, extraction.pointGeometry]);
+
+  useEffect(() => () => {
+    if (displayPointGeometry && displayPointGeometry !== extraction.pointGeometry) {
+      displayPointGeometry.dispose();
+    }
+  }, [displayPointGeometry, extraction.pointGeometry]);
+
+  // Preserve edited point data across point/soft-point mode switches.
+  const points = useMemo(() => {
+    if (!displayPointGeometry) return null;
+    const material = new THREE.PointsMaterial({
+      vertexColors: true,
+      sizeAttenuation: true,
+      transparent: true,
+      depthTest: true,
+      depthWrite: true,
+      blending: THREE.NormalBlending,
     });
-    return group;
-  }, [meshes, viewMode, clipPlanes]);
+    const nextPoints = new THREE.Points(displayPointGeometry, material);
+    return nextPoints;
+  }, [displayPointGeometry]);
 
-  useEffect(() => { if (points) (points.material as THREE.PointsMaterial).size = (splatMode || viewMode === 'gaussian') ? pointSize * 4 : pointSize; }, [pointSize, points, splatMode, viewMode]);
-  useEffect(() => { if (points) (points.material as THREE.PointsMaterial).opacity = opacity; }, [opacity, points]);
-  useEffect(() => { if (points) (points.material as THREE.PointsMaterial).clippingPlanes = clipPlanes || []; }, [clipPlanes, points]);
+  useLayoutEffect(() => {
+    if (!points) return;
+    const material = points.material as THREE.PointsMaterial;
+    material.size = pointProfile.size;
+    material.opacity = pointProfile.opacity;
+    material.transparent = true;
+    material.depthTest = pointProfile.depthTest;
+    material.depthWrite = pointProfile.depthWrite;
+    material.blending = pointProfile.blending;
+    material.alphaTest = pointProfile.alphaTest;
+    material.map = pointProfile.useSoftTexture ? splatTex : null;
+    material.clippingPlanes = clipPlanes ?? [];
+    material.needsUpdate = true;
+  }, [clipPlanes, pointProfile.alphaTest, pointProfile.blending, pointProfile.depthTest, pointProfile.depthWrite, pointProfile.opacity, pointProfile.size, pointProfile.useSoftTexture, points, splatTex]);
+
+  useEffect(() => () => {
+    const material = points?.material;
+    if (Array.isArray(material)) material.forEach((item) => item.dispose());
+    else material?.dispose();
+  }, [points]);
+
+  const meshPresentation = useMemo(() => {
+    const isMeshMode = viewMode === 'mesh' || viewMode === 'wireframe';
+    if (!isMeshMode || extraction.meshes.length === 0) return null;
+
+    const showEdges = viewMode === 'wireframe';
+    const threshold = Number.isFinite(edgeThreshold) ? Math.max(0, edgeThreshold) : 30;
+    const group = new THREE.Group();
+    const ownedMaterials: THREE.Material[] = [];
+    const ownedEdgeGeometries: THREE.EdgesGeometry[] = [];
+    let edgeMaterial: THREE.LineBasicMaterial | null = null;
+
+    if (showEdges) {
+      edgeMaterial = new THREE.LineBasicMaterial({
+        color: EDGE_COLOR,
+        transparent: true,
+        opacity: 0.72,
+        depthTest: true,
+        depthWrite: false,
+        blending: THREE.NormalBlending,
+      });
+      edgeMaterial.clippingPlanes = [];
+      edgeMaterial.clipShadows = false;
+      ownedMaterials.push(edgeMaterial);
+    }
+
+    extraction.meshes.forEach(({ geometry, sourceMaterials }) => {
+      const materials = (sourceMaterials.length > 0 ? sourceMaterials : [undefined]).map((source) => {
+        const material = createMeshMaterial(source, geometry.hasAttribute('color'), undefined, showEdges);
+        ownedMaterials.push(material);
+        return material;
+      });
+      const mesh = new THREE.Mesh(geometry, materials.length === 1 ? materials[0] : materials);
+      group.add(mesh);
+
+      if (showEdges && edgeMaterial) {
+        const edgeGeometry = new THREE.EdgesGeometry(geometry, threshold);
+        const edges = new THREE.LineSegments(edgeGeometry, edgeMaterial);
+        edges.renderOrder = 1;
+        ownedEdgeGeometries.push(edgeGeometry);
+        group.add(edges);
+      }
+    });
+
+    return { group, ownedMaterials, ownedEdgeGeometries };
+  }, [edgeThreshold, extraction.meshes, viewMode]);
+
+  useLayoutEffect(() => {
+    if (!meshPresentation) return;
+    meshPresentation.ownedMaterials.forEach((material) => {
+      material.clippingPlanes = clipPlanes ?? [];
+      material.needsUpdate = true;
+    });
+  }, [clipPlanes, meshPresentation]);
+
+  useEffect(() => () => {
+    meshPresentation?.ownedEdgeGeometries.forEach((geometry) => geometry.dispose());
+    meshPresentation?.ownedMaterials.forEach((material) => {
+      const ownedMap = material.userData.ownedMap as THREE.Texture | undefined;
+      ownedMap?.dispose();
+      material.dispose();
+    });
+  }, [meshPresentation]);
+
+  const meshGroup = meshPresentation?.group ?? null;
+  const activeArtifact = isPointMode ? points : meshGroup;
 
   useEffect(() => {
-    if (points && onPointsReady && (viewMode === 'points' || viewMode === 'gaussian')) {
-      const pos = points.geometry.getAttribute('position');
-      onPointsReady(points, pos ? pos.count : 0);
+    if (isPointMode && points && onPointsReady) {
+      const position = points.geometry.getAttribute('position');
+      onPointsReady(points, position?.count ?? 0);
     }
-  }, [points, onPointsReady, viewMode]);
+  }, [isPointMode, onPointsReady, points]);
 
   useEffect(() => {
-    if (meshGroup && onMeshReady && (viewMode === 'mesh' || viewMode === 'wireframe')) {
-      onMeshReady(meshGroup);
-    }
-  }, [meshGroup, onMeshReady, viewMode]);
+    if (meshGroup && onMeshReady) onMeshReady(meshGroup);
+  }, [meshGroup, onMeshReady]);
 
-  if (!points && !meshGroup) return null;
+  useEffect(() => {
+    if (!activeArtifact || !onBoundsReady) return;
+    const box = new THREE.Box3().setFromObject(activeArtifact);
+    if (box.isEmpty()) return;
 
-  const showMesh = (viewMode === 'mesh' || viewMode === 'wireframe') && meshGroup;
-  const showPoints = (viewMode === 'points' || viewMode === 'gaussian');
+    const center = box.getCenter(new THREE.Vector3());
+    const radius = center.distanceTo(box.max);
+    onBoundsReady({ center, radius, box });
+  }, [activeArtifact, onBoundsReady]);
 
-  return (
-    <>
-      {showMesh && <primitive object={meshGroup} />}
-      {showPoints && points && <primitive object={points} />}
-    </>
-  );
+  if (!activeArtifact) return null;
+  return <primitive object={activeArtifact} />;
 }
