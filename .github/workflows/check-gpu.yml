@@ -17,10 +17,13 @@ jobs:
       - name: Check GPU
         run: |
           echo === Nodes ===
-          kubectl get nodes -o wide
+          kubectl get nodes -o wide 2>/dev/null || echo no-node-access
           echo === GPU resources ===
-          kubectl get nodes -o json 2>/dev/null | python3 -c "import json,sys; [print(n['metadata']['name'], 'capacity_gpu='+str(n.get('status',{}).get('capacity',{}).get('nvidia.com/gpu','none')), 'allocatable_gpu='+str(n.get('status',{}).get('allocatable',{}).get('nvidia.com/gpu','none'))) for n in json.load(sys.stdin).get('items',[])]"
+          kubectl get nodes -o json 2>/dev/null | python3 -c "import json,sys; [print(n['metadata']['name'], 'capacity_gpu='+str(n.get('status',{}).get('capacity',{}).get('nvidia.com/gpu','none')), 'allocatable_gpu='+str(n.get('status',{}).get('allocatable',{}).get('nvidia.com/gpu','none'))) for n in json.load(sys.stdin).get('items',[])]" || echo no-node-access
+          echo === Production deployment status ===
+          kubectl get deploy video2gauss -n ns-mzyybqj8
+          kubectl get pods -n ns-mzyybqj8
           echo === GPU worker deploy status ===
-          kubectl get deploy gpu-worker -n ns-mzyybqj8 2>/dev/null || echo no-gpu-worker-deploy
+          kubectl get deploy gpu-worker -n ns-mzyybqj8 2>/dev/null || echo no-sealos-gpu-worker-deploy
           echo === Check model PVC ===
-          kubectl get pvc -n ns-mzyybqj8 2>/dev/null
+          kubectl get pvc -n ns-mzyybqj8 2>/dev/null || echo no-pvc-access

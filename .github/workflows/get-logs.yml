@@ -15,9 +15,12 @@ jobs:
           mkdir -p ~/.kube
           echo "${{ secrets.SEALOS_KUBECONFIG }}" | base64 -d > ~/.kube/config
           echo === GPU_NODES ===
-          kubectl get nodes -o wide
+          kubectl get nodes -o wide 2>/dev/null || echo no-node-access
           echo === GPU_CAPACITY ===
-          kubectl get nodes -o json 2>/dev/null | python3 -c "import json,sys; [print(n['metadata']['name'], 'gpu='+str(n.get('status',{}).get('capacity',{}).get('nvidia.com/gpu','0')), 'cpu='+str(n.get('status',{}).get('capacity',{}).get('cpu','?')), 'mem='+str(n.get('status',{}).get('capacity',{}).get('memory','?'))) for n in json.load(sys.stdin).get('items',[])]"
+          kubectl get nodes -o json 2>/dev/null | python3 -c "import json,sys; [print(n['metadata']['name'], 'gpu='+str(n.get('status',{}).get('capacity',{}).get('nvidia.com/gpu','0')), 'cpu='+str(n.get('status',{}).get('capacity',{}).get('cpu','?')), 'mem='+str(n.get('status',{}).get('capacity',{}).get('memory','?'))) for n in json.load(sys.stdin).get('items',[])]" || echo no-node-access
+          echo === DEPLOYMENT ===
+          kubectl get deploy video2gauss -n ns-mzyybqj8
+          kubectl get pods -n ns-mzyybqj8
           echo === BACKEND_LOGS ===
           kubectl logs -n ns-mzyybqj8 deployment/video2gauss -c backend --tail=100
           echo === FRONTEND_LOGS ===
