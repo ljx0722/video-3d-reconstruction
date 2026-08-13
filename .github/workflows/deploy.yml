@@ -30,7 +30,7 @@ jobs:
       - name: Install GPU mesh test dependencies
         run: pip install 'numpy>=1.26,<2' 'scipy>=1.11,<1.14' 'trimesh>=4.4,<5' 'matplotlib>=3.8,<4'
       - name: Run GPU worker tests
-        run: python -m unittest gpu_worker.test_mesh_builder gpu_worker.test_artifact_v2 -v
+        run: python -m unittest gpu_worker.test_mesh_builder gpu_worker.test_artifact_v2 gpu_worker.test_mesh_source_tsdf gpu_worker.test_sam2_mask gpu_worker.test_mesh_quality -v
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
