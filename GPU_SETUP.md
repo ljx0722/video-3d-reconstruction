@@ -63,6 +63,14 @@ curl -fsSL -o "$RELEASE_DIR/gpu_server.py" \
   "https://raw.githubusercontent.com/ljx0722/video-3d-reconstruction/${RELEASE_SHA}/gpu_worker/gpu_server.py"
 curl -fsSL -o "$RELEASE_DIR/mesh_builder.py" \
   "https://raw.githubusercontent.com/ljx0722/video-3d-reconstruction/${RELEASE_SHA}/gpu_worker/mesh_builder.py"
+curl -fsSL -o "$RELEASE_DIR/mesh_source.py" \
+  "https://raw.githubusercontent.com/ljx0722/video-3d-reconstruction/${RELEASE_SHA}/gpu_worker/mesh_source.py"
+curl -fsSL -o "$RELEASE_DIR/tsdf_builder.py" \
+  "https://raw.githubusercontent.com/ljx0722/video-3d-reconstruction/${RELEASE_SHA}/gpu_worker/tsdf_builder.py"
+curl -fsSL -o "$RELEASE_DIR/sam2_mask.py" \
+  "https://raw.githubusercontent.com/ljx0722/video-3d-reconstruction/${RELEASE_SHA}/gpu_worker/sam2_mask.py"
+curl -fsSL -o "$RELEASE_DIR/mesh_quality.py" \
+  "https://raw.githubusercontent.com/ljx0722/video-3d-reconstruction/${RELEASE_SHA}/gpu_worker/mesh_quality.py"
 curl -fsSL -o "$RELEASE_DIR/requirements.autodl.txt" \
   "https://raw.githubusercontent.com/ljx0722/video-3d-reconstruction/${RELEASE_SHA}/gpu_worker/requirements.autodl.txt"
 curl -fsSL -o "$RELEASE_DIR/lingbot_map/vis/glb_export.py" \
@@ -82,6 +90,10 @@ fi
 "$VENV/bin/python" -m py_compile \
   "$RELEASE_DIR/gpu_server.py" \
   "$RELEASE_DIR/mesh_builder.py" \
+  "$RELEASE_DIR/mesh_source.py" \
+  "$RELEASE_DIR/tsdf_builder.py" \
+  "$RELEASE_DIR/sam2_mask.py" \
+  "$RELEASE_DIR/mesh_quality.py" \
   "$RELEASE_DIR/lingbot_map/vis/glb_export.py"
 PYTHONPATH="$RELEASE_DIR:/root/lingbot-map" \
   "$VENV/bin/python" "$RELEASE_DIR/mesh_builder.py" --self-test

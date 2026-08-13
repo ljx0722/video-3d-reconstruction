@@ -19,14 +19,7 @@ jobs:
           echo === Nodes ===
           kubectl get nodes -o wide
           echo === GPU resources ===
-          kubectl get nodes -o json 2>/dev/null | python3 -c "
-import json,sys
-for n in json.load(sys.stdin).get('items',[]):
-    name=n['metadata']['name']
-    gpu=n.get('status',{}).get('capacity',{}).get('nvidia.com/gpu','none')
-    alloc=n.get('status',{}).get('allocatable',{}).get('nvidia.com/gpu','none')
-    print(f'{name}: capacity_gpu={gpu} allocatable_gpu={alloc}')
-"
+          kubectl get nodes -o json 2>/dev/null | python3 -c "import json,sys; [print(n['metadata']['name'], 'capacity_gpu='+str(n.get('status',{}).get('capacity',{}).get('nvidia.com/gpu','none')), 'allocatable_gpu='+str(n.get('status',{}).get('allocatable',{}).get('nvidia.com/gpu','none'))) for n in json.load(sys.stdin).get('items',[])]"
           echo === GPU worker deploy status ===
           kubectl get deploy gpu-worker -n ns-mzyybqj8 2>/dev/null || echo no-gpu-worker-deploy
           echo === Check model PVC ===
