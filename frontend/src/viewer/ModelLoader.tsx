@@ -1,7 +1,7 @@
-import { useEffect, useLayoutEffect, useMemo, useState } from 'react';
+import { useEffect, useLayoutEffect, useMemo } from 'react';
 import { useGLTF } from '@react-three/drei';
 import * as THREE from 'three';
-import { createPresentationMaterial, getPointMaterialProfile, srgbToLinear } from './rendering';
+import { createCircleTexture, createGaussianTexture, createPresentationMaterial, getPointMaterialProfile, srgbToLinear } from './rendering';
 
 interface ModelBounds {
   center: THREE.Vector3;
@@ -21,7 +21,22 @@ interface Props {
   clipPlanes?: THREE.Plane[];
   viewMode?: 'points' | 'gaussian' | 'mesh' | 'wireframe';
   edgeThreshold?: number;
+  edgeColor?: string;
+  edgeOpacity?: number;
   colorsAreLinear?: boolean;
+  gaussianRadius?: number;
+  gaussianOpacity?: number;
+  gaussianFalloff?: number;
+  gaussianEdgeCutoff?: number;
+  gaussianBlend?: 'normal' | 'additive';
+  gaussianDepthWrite?: boolean;
+  pointShape?: 'square' | 'circle';
+  pointDepthTest?: boolean;
+  surfaceRoughness?: number;
+  surfaceMetalness?: number;
+  surfaceColorBrightness?: number;
+  surfaceFlatShading?: boolean;
+  surfaceDoubleSide?: boolean;
 }
 
 interface ExtractedMesh {
@@ -36,7 +51,7 @@ interface Extraction {
 }
 
 const POINT_BUDGET = 2_000_000;
-const EDGE_COLOR = new THREE.Color('#6f89a3');
+const DEFAULT_EDGE_COLOR = new THREE.Color('#6f89a3');
 const SRGB_TO_LINEAR_LUT = Float32Array.from({ length: 256 }, (_, index) => srgbToLinear(index / 255));
 
 function artifactColorToLinear(value: number, colorsAreLinear: boolean): number {
@@ -64,9 +79,20 @@ function createMeshMaterial(
   hasVertexColors: boolean,
   clipPlanes: THREE.Plane[] | undefined,
   polygonOffset: boolean,
+  surfaceRoughness: number,
+  surfaceMetalness: number,
+  surfaceColorBrightness: number,
+  surfaceFlatShading: boolean,
+  surfaceDoubleSide: boolean,
 ): THREE.MeshStandardMaterial {
   const sourceMap = source instanceof THREE.MeshStandardMaterial && source.map ? source.map.clone() : null;
-  const material = createPresentationMaterial(hasVertexColors, sourceMap);
+  const material = createPresentationMaterial(hasVertexColors, sourceMap, {
+    roughness: surfaceRoughness,
+    metalness: surfaceMetalness,
+    colorBrightness: surfaceColorBrightness,
+    flatShading: surfaceFlatShading,
+    doubleSide: surfaceDoubleSide,
+  });
   if (sourceMap) material.userData.ownedMap = sourceMap;
   material.clippingPlanes = clipPlanes ?? [];
   material.clipShadows = true;
@@ -88,28 +114,29 @@ export default function ModelLoader({
   clipPlanes,
   viewMode = 'points',
   edgeThreshold = 30,
+  edgeColor = '#6f89a3',
+  edgeOpacity = 0.72,
   colorsAreLinear = false,
+  gaussianRadius = 4,
+  gaussianOpacity = 0.75,
+  gaussianFalloff = 2,
+  gaussianEdgeCutoff = 0,
+  gaussianBlend = 'normal',
+  gaussianDepthWrite = false,
+  pointShape = 'square',
+  pointDepthTest = true,
+  surfaceRoughness = 0.82,
+  surfaceMetalness = 0,
+  surfaceColorBrightness = 1,
+  surfaceFlatShading = false,
+  surfaceDoubleSide = true,
 }: Props) {
   const { scene } = useGLTF(url);
-  const [splatTex] = useState(() => {
-    const canvas = document.createElement('canvas');
-    canvas.width = canvas.height = 32;
-    const context = canvas.getContext('2d')!;
-    const gradient = context.createRadialGradient(16, 16, 0, 16, 16, 16);
-    gradient.addColorStop(0, 'rgba(255,255,255,1)');
-    gradient.addColorStop(0.4, 'rgba(255,255,255,0.6)');
-    gradient.addColorStop(0.8, 'rgba(255,255,255,0.1)');
-    gradient.addColorStop(1, 'rgba(255,255,255,0)');
-    context.fillStyle = gradient;
-    context.fillRect(0, 0, 32, 32);
-
-    const texture = new THREE.CanvasTexture(canvas);
-    texture.name = 'ModelLoader gaussian radial texture';
-    texture.minFilter = THREE.LinearFilter;
-    texture.magFilter = THREE.LinearFilter;
-    texture.generateMipmaps = false;
-    return texture;
-  });
+  const splatTex = useMemo(
+    () => createGaussianTexture(gaussianFalloff, gaussianEdgeCutoff),
+    [gaussianEdgeCutoff, gaussianFalloff],
+  );
+  const circleTex = useMemo(() => createCircleTexture(), []);
 
   // Extraction is independent of presentation mode. Traverse a local hierarchy clone so
   // matrixWorld can be updated without mutating the cached useGLTF scene or its resources.
@@ -230,7 +257,8 @@ export default function ModelLoader({
     extraction.meshes.forEach(({ geometry }) => geometry.dispose());
   }, [extraction]);
 
-  useEffect(() => () => splatTex.dispose(), [splatTex]);
+  useEffect(() => () => splatTex?.dispose(), [splatTex]);
+  useEffect(() => () => circleTex?.dispose(), [circleTex]);
 
   useEffect(() => {
     if (onCameraPositions && extraction.cameraPositions.length > 0) {
@@ -239,7 +267,16 @@ export default function ModelLoader({
   }, [extraction.cameraPositions, onCameraPositions]);
 
   const isPointMode = viewMode === 'points' || viewMode === 'gaussian';
-  const pointProfile = getPointMaterialProfile(viewMode, pointSize, opacity);
+  const pointProfile = getPointMaterialProfile(viewMode, pointSize, opacity, {
+    gaussianRadius,
+    gaussianOpacity,
+    gaussianFalloff,
+    gaussianEdgeCutoff,
+    gaussianBlend,
+    gaussianDepthWrite,
+    pointShape,
+    pointDepthTest,
+  });
 
   const displayPointGeometry = useMemo(() => {
     if (!extraction.pointGeometry) return null;
@@ -283,10 +320,10 @@ export default function ModelLoader({
     material.depthWrite = pointProfile.depthWrite;
     material.blending = pointProfile.blending;
     material.alphaTest = pointProfile.alphaTest;
-    material.map = pointProfile.useSoftTexture ? splatTex : null;
+    material.map = pointProfile.useSoftTexture ? splatTex : pointProfile.pointShape === 'circle' ? circleTex : null;
     material.clippingPlanes = clipPlanes ?? [];
     material.needsUpdate = true;
-  }, [clipPlanes, pointProfile.alphaTest, pointProfile.blending, pointProfile.depthTest, pointProfile.depthWrite, pointProfile.opacity, pointProfile.size, pointProfile.useSoftTexture, points, splatTex]);
+  }, [circleTex, clipPlanes, pointDepthTest, pointProfile.alphaTest, pointProfile.blending, pointProfile.depthTest, pointProfile.depthWrite, pointProfile.opacity, pointProfile.pointShape, pointProfile.size, pointProfile.useSoftTexture, points, splatTex]);
 
   useEffect(() => () => {
     const material = points?.material;
@@ -307,7 +344,7 @@ export default function ModelLoader({
 
     if (showEdges) {
       edgeMaterial = new THREE.LineBasicMaterial({
-        color: EDGE_COLOR,
+        color: DEFAULT_EDGE_COLOR,
         transparent: true,
         opacity: 0.72,
         depthTest: true,
@@ -321,7 +358,17 @@ export default function ModelLoader({
 
     extraction.meshes.forEach(({ geometry, sourceMaterials }) => {
       const materials = (sourceMaterials.length > 0 ? sourceMaterials : [undefined]).map((source) => {
-        const material = createMeshMaterial(source, geometry.hasAttribute('color'), undefined, showEdges);
+        const material = createMeshMaterial(
+          source,
+          geometry.hasAttribute('color'),
+          undefined,
+          showEdges,
+          surfaceRoughness,
+          surfaceMetalness,
+          surfaceColorBrightness,
+          surfaceFlatShading,
+          surfaceDoubleSide,
+        );
         ownedMaterials.push(material);
         return material;
       });
@@ -338,15 +385,28 @@ export default function ModelLoader({
     });
 
     return { group, ownedMaterials, ownedEdgeGeometries };
-  }, [edgeThreshold, extraction.meshes, viewMode]);
+  }, [
+    edgeThreshold,
+    extraction.meshes,
+    surfaceColorBrightness,
+    surfaceDoubleSide,
+    surfaceFlatShading,
+    surfaceMetalness,
+    surfaceRoughness,
+    viewMode,
+  ]);
 
   useLayoutEffect(() => {
     if (!meshPresentation) return;
     meshPresentation.ownedMaterials.forEach((material) => {
       material.clippingPlanes = clipPlanes ?? [];
+      if (material instanceof THREE.LineBasicMaterial) {
+        material.color.set(edgeColor);
+        material.opacity = edgeOpacity;
+      }
       material.needsUpdate = true;
     });
-  }, [clipPlanes, meshPresentation]);
+  }, [clipPlanes, edgeColor, edgeOpacity, meshPresentation]);
 
   useEffect(() => () => {
     meshPresentation?.ownedEdgeGeometries.forEach((geometry) => geometry.dispose());

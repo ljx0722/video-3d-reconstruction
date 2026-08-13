@@ -16,17 +16,81 @@ export function decodeArtifactColor(value: number, colorsAreLinear: boolean) {
   return colorsAreLinear ? Math.max(0, Math.min(1, value)) : srgbToLinear(value);
 }
 
-export function getPointMaterialProfile(mode: ViewerMode, pointSize: number, opacity: number) {
+export interface PointMaterialOptions {
+  gaussianRadius?: number;
+  gaussianOpacity?: number;
+  gaussianFalloff?: number;
+  gaussianEdgeCutoff?: number;
+  gaussianBlend?: 'normal' | 'additive';
+  gaussianDepthWrite?: boolean;
+  pointShape?: 'square' | 'circle';
+  pointDepthTest?: boolean;
+}
+
+export function getPointMaterialProfile(
+  mode: ViewerMode,
+  pointSize: number,
+  opacity: number,
+  options: PointMaterialOptions = {},
+) {
   const soft = mode === 'gaussian';
+  const gaussianRadius = options.gaussianRadius ?? 4;
+  const gaussianOpacity = options.gaussianOpacity ?? 0.75;
+  const blending = soft && options.gaussianBlend === 'additive'
+    ? THREE.AdditiveBlending
+    : THREE.NormalBlending;
   return {
-    size: soft ? pointSize * 4 : pointSize,
-    opacity: soft ? Math.min(opacity, 0.75) : opacity,
-    blending: THREE.NormalBlending,
-    depthTest: true,
-    depthWrite: soft ? false : true,
-    alphaTest: 0,
+    size: soft ? pointSize * gaussianRadius : pointSize,
+    opacity: soft ? Math.min(opacity, gaussianOpacity, blending === THREE.AdditiveBlending ? 0.35 : 0.9) : opacity,
+    blending,
+    depthTest: options.pointDepthTest ?? true,
+    depthWrite: soft ? (options.gaussianDepthWrite ?? false) : true,
+    alphaTest: soft ? (options.gaussianEdgeCutoff ?? 0) : 0,
     useSoftTexture: soft,
+    gaussianFalloff: options.gaussianFalloff ?? 2,
+    pointShape: options.pointShape ?? 'square',
   };
+}
+
+export function createCircleTexture() {
+  const canvas = document.createElement('canvas');
+  canvas.width = canvas.height = 32;
+  const context = canvas.getContext('2d');
+  if (!context) return null;
+  context.fillStyle = '#fff';
+  context.beginPath();
+  context.arc(16, 16, 15.5, 0, Math.PI * 2);
+  context.fill();
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.name = 'ModelLoader circular point texture';
+  texture.minFilter = THREE.LinearFilter;
+  texture.magFilter = THREE.LinearFilter;
+  texture.generateMipmaps = false;
+  return texture;
+}
+
+export function createGaussianTexture(falloff = 2, edgeCutoff = 0) {
+  const canvas = document.createElement('canvas');
+  canvas.width = canvas.height = 32;
+  const context = canvas.getContext('2d');
+  if (!context) return null;
+  const gradient = context.createRadialGradient(16, 16, 0, 16, 16, 16);
+  const edge = Math.max(0, Math.min(0.1, edgeCutoff));
+  const power = Math.max(0.5, Math.min(4, falloff));
+  const stops = 16;
+  for (let index = 0; index <= stops; index += 1) {
+    const radius = index / stops;
+    const alpha = radius >= 1 - edge ? 0 : Math.pow(Math.max(0, 1 - radius), power);
+    gradient.addColorStop(radius, `rgba(255,255,255,${alpha})`);
+  }
+  context.fillStyle = gradient;
+  context.fillRect(0, 0, 32, 32);
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.name = 'ModelLoader gaussian radial texture';
+  texture.minFilter = THREE.LinearFilter;
+  texture.magFilter = THREE.LinearFilter;
+  texture.generateMipmaps = false;
+  return texture;
 }
 
 export function createPointColors(mode: string, positions: Float32Array, rgb: Float32Array) {
@@ -61,17 +125,30 @@ export function createPointColors(mode: string, positions: Float32Array, rgb: Fl
   return colors;
 }
 
-export function createPresentationMaterial(hasVertexColors: boolean, map: THREE.Texture | null = null) {
+export interface PresentationMaterialOptions {
+  roughness?: number;
+  metalness?: number;
+  colorBrightness?: number;
+  flatShading?: boolean;
+  doubleSide?: boolean;
+}
+
+export function createPresentationMaterial(
+  hasVertexColors: boolean,
+  map: THREE.Texture | null = null,
+  options: PresentationMaterialOptions = {},
+) {
   if (map) map.colorSpace = THREE.SRGBColorSpace;
+  const brightness = Math.max(0.5, Math.min(1.5, options.colorBrightness ?? 1));
   return new THREE.MeshStandardMaterial({
-    color: hasVertexColors || map ? 0xffffff : 0xc7cbd1,
+    color: hasVertexColors || map ? new THREE.Color(brightness, brightness, brightness) : new THREE.Color(0xc7cbd1).multiplyScalar(brightness),
     map,
     vertexColors: hasVertexColors,
-    metalness: 0,
-    roughness: 0.82,
+    metalness: Math.max(0, Math.min(0.4, options.metalness ?? 0)),
+    roughness: Math.max(0.2, Math.min(1, options.roughness ?? 0.82)),
     emissive: 0x000000,
-    side: THREE.DoubleSide,
-    flatShading: false,
+    side: options.doubleSide === false ? THREE.FrontSide : THREE.DoubleSide,
+    flatShading: options.flatShading ?? false,
     depthTest: true,
     depthWrite: true,
     transparent: false,

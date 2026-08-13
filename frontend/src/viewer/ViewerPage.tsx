@@ -2,13 +2,15 @@ import { useState, useCallback, useRef, useEffect, Component } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import useSWR from 'swr';
 import * as THREE from 'three';
-import { getJob } from '../api/client';
+import { cancelMeshRun, createMeshRun, deleteMeshRun, getJob, listMeshRuns, selectActiveMeshRun } from '../api/client';
 import ViewerCanvas from './ViewerCanvas';
 import ControlsPanel from './ControlsPanel';
 import CrossSectionView from './CrossSectionView';
 import { type BoxClip } from './Toolbar';
 import { createPointColors } from './rendering';
-import type { Job } from '../types';
+import { useViewerRenderSettings } from './renderSettings';
+import Sam2PromptPanel from './Sam2PromptPanel';
+import type { Job, MeshRun, MeshRunPreset, Sam2Prompt } from '../types';
 
 class ErrorBoundary extends Component<{ children: React.ReactNode }, { hasError: boolean; error: Error | null }> {
   constructor(props: any) {
@@ -36,7 +38,6 @@ class ErrorBoundary extends Component<{ children: React.ReactNode }, { hasError:
   }
 }
 
-const POINT_SIZE = 0.004;
 const statusSteps = [
   { label: '上传视频' }, { label: '等待处理' }, { label: 'GPU 推理计算中' },
   { label: '导出 3D 模型' }, { label: '重建完成' },
@@ -45,23 +46,43 @@ const defaultBoxClip: BoxClip = { enabled: false, min: [-1, -0.5, -1], max: [1, 
 
 export default function ViewerPage() {
   const { jobId } = useParams<{ jobId: string }>();
-  const { data: job, error: jobError } = useSWR<Job>(
+  const { data: job, error: jobError, mutate: mutateJob } = useSWR<Job>(
     jobId ? `job-${jobId}` : null, () => getJob(jobId!),
     { refreshInterval: (data?: Job) => (data?.status === 'completed' || data?.status === 'partial' || data?.status === 'failed') ? 0 : 2000 });
+  const { data: meshRuns = [], mutate: mutateMeshRuns } = useSWR<MeshRun[]>(
+    jobId && job?.point_cloud_available ? `mesh-runs-${jobId}` : null,
+    () => listMeshRuns(jobId!),
+    { refreshInterval: (runs?: MeshRun[]) => runs?.some(run => run.status === 'queued' || run.status === 'processing') ? 2000 : 0 },
+  );
 
-  // Vis
-  const [pointSize, setPointSize] = useState(POINT_SIZE);
-  const [opacity, setOpacity] = useState(1);
-  const [showAxes, setShowAxes] = useState(false);
-  const [showTrajectory, setShowTrajectory] = useState(true);
-  const [orthographic, setOrthographic] = useState(false);
-  const [colorMode, setColorMode] = useState('rgb');
-  const [exposure, setExposure] = useState(1.0);
-  const [showGrid, setShowGrid] = useState(false);
-  const [bloomStrength, setBloomStrength] = useState(0.0);
+  const { settings: renderSettings, updateSetting: updateRenderSetting, applyPreset: applyRenderPreset, reset: resetRenderSettings } = useViewerRenderSettings();
+  const {
+    pointSize,
+    pointOpacity: opacity,
+    showAxes,
+    showTrajectory,
+    orthographic,
+    colorMode,
+    exposure,
+    showGrid,
+    bloomStrength,
+    edgeThreshold,
+  } = renderSettings;
   const [viewMode, setViewMode] = useState<string>('points');
-  const [edgeThreshold, setEdgeThreshold] = useState(30);
   const [fitToken, setFitToken] = useState(0);
+  const [meshRunBusy, setMeshRunBusy] = useState(false);
+  const [meshRunError, setMeshRunError] = useState<string | null>(null);
+  const [sam2PromptOpen, setSam2PromptOpen] = useState(false);
+  const setPointSize = useCallback((value: number) => updateRenderSetting('pointSize', value), [updateRenderSetting]);
+  const setOpacity = useCallback((value: number) => updateRenderSetting('pointOpacity', value), [updateRenderSetting]);
+  const setShowAxes = useCallback((value: boolean) => updateRenderSetting('showAxes', value), [updateRenderSetting]);
+  const setShowTrajectory = useCallback((value: boolean) => updateRenderSetting('showTrajectory', value), [updateRenderSetting]);
+  const setOrthographic = useCallback((value: boolean) => updateRenderSetting('orthographic', value), [updateRenderSetting]);
+  const setColorMode = useCallback((value: string) => updateRenderSetting('colorMode', value), [updateRenderSetting]);
+  const setExposure = useCallback((value: number) => updateRenderSetting('exposure', value), [updateRenderSetting]);
+  const setShowGrid = useCallback((value: boolean) => updateRenderSetting('showGrid', value), [updateRenderSetting]);
+  const setBloomStrength = useCallback((value: number) => updateRenderSetting('bloomStrength', value), [updateRenderSetting]);
+  const setEdgeThreshold = useCallback((value: number) => updateRenderSetting('edgeThreshold', value), [updateRenderSetting]);
 
   // Processing
   const [pointCount, setPointCount] = useState(0);
@@ -497,6 +518,52 @@ export default function ViewerPage() {
     if (pointsRef.current && originalData.current) applyColor(colorMode);
   }, [colorMode, applyColor]);
 
+  const activeMeshRun = meshRuns.find(run => run.is_active && run.status === 'completed') ?? null;
+  const activeMeshUrl = activeMeshRun?.output_url ?? job?.mesh_url ?? null;
+  const resolvedMeshAvailable = Boolean(activeMeshUrl || meshAvailable);
+
+  const withMeshRunMutation = useCallback(async (operation: () => Promise<unknown>) => {
+    setMeshRunBusy(true);
+    setMeshRunError(null);
+    try {
+      await operation();
+      await Promise.all([mutateMeshRuns(), mutateJob()]);
+    } catch (error) {
+      setMeshRunError(error instanceof Error ? error.message : '表面重建操作失败');
+    } finally {
+      setMeshRunBusy(false);
+    }
+  }, [mutateJob, mutateMeshRuns]);
+
+  const handleCreateMeshRun = useCallback((preset: MeshRunPreset) => {
+    if (!jobId) return;
+    void withMeshRunMutation(() => createMeshRun(jobId, preset));
+  }, [jobId, withMeshRunMutation]);
+
+  const handleCreateHighQuality = useCallback((prompts: Sam2Prompt[]) => {
+    if (!jobId) return;
+    setSam2PromptOpen(false);
+    void withMeshRunMutation(() => createMeshRun(jobId, 'high-quality', {
+      use_sam2: true,
+      sam2_prompts: prompts,
+    }));
+  }, [jobId, withMeshRunMutation]);
+
+  const handleSelectMeshRun = useCallback((runId: string | null) => {
+    if (!jobId) return;
+    void withMeshRunMutation(() => selectActiveMeshRun(jobId, runId));
+  }, [jobId, withMeshRunMutation]);
+
+  const handleCancelMeshRun = useCallback((runId: string) => {
+    if (!jobId) return;
+    void withMeshRunMutation(() => cancelMeshRun(jobId, runId));
+  }, [jobId, withMeshRunMutation]);
+
+  const handleDeleteMeshRun = useCallback((runId: string) => {
+    if (!jobId) return;
+    void withMeshRunMutation(() => deleteMeshRun(jobId, runId));
+  }, [jobId, withMeshRunMutation]);
+
   const isProcessing = job?.status === 'uploaded' || job?.status === 'processing';
   const canViewPointCloud = job?.status === 'completed' || job?.status === 'partial' || job?.point_cloud_available === true;
   const progressPct = Math.max(2, Math.min(100, (job?.progress || 0) * 100));
@@ -566,17 +633,43 @@ export default function ViewerPage() {
         {canViewPointCloud?(
           <>
             <ErrorBoundary>
-            <ViewerCanvas jobId={job.id} pointSize={pointSize} opacity={opacity}
+            <ViewerCanvas jobId={job.id} pointUrl={job.result_url ?? undefined} meshUrl={activeMeshUrl} pointSize={pointSize} opacity={opacity}
               onPointsReady={handlePointsReady} boxClip={boxClip}
               showAxes={showAxes} orthographic={orthographic}
-              showGrid={showGrid} bloomStrength={bloomStrength}
-              exposure={exposure} edgeThreshold={edgeThreshold} fitToken={fitToken}
+              showGrid={showGrid} showTrajectory={showTrajectory}
+              bloomStrength={bloomStrength}
+              bloomThreshold={renderSettings.bloomThreshold}
+              bloomSmoothing={renderSettings.bloomSmoothing}
+              exposure={exposure}
+              backgroundColor={renderSettings.backgroundColor}
+              fov={renderSettings.fov}
+              lightIntensity={renderSettings.lightIntensity}
+              ambientLight={renderSettings.ambientLight}
+              keyLight={renderSettings.keyLight}
+              fillLight={renderSettings.fillLight}
+              rimLight={renderSettings.rimLight}
+              edgeThreshold={edgeThreshold}
+              edgeColor={renderSettings.edgeColor}
+              edgeOpacity={renderSettings.edgeOpacity}
+              gaussianRadius={renderSettings.gaussianRadius}
+              gaussianOpacity={renderSettings.gaussianOpacity}
+              gaussianFalloff={renderSettings.gaussianFalloff}
+              gaussianEdgeCutoff={renderSettings.gaussianEdgeCutoff}
+              gaussianBlend={renderSettings.gaussianBlend}
+              gaussianDepthWrite={renderSettings.gaussianDepthWrite}
+              pointShape={renderSettings.pointShape}
+              pointDepthTest={renderSettings.pointDepthTest}
+              surfaceRoughness={renderSettings.surfaceRoughness}
+              surfaceMetalness={renderSettings.surfaceMetalness}
+              surfaceColorBrightness={renderSettings.surfaceColorBrightness}
+              surfaceFlatShading={renderSettings.surfaceFlatShading}
+              surfaceDoubleSide={renderSettings.surfaceDoubleSide}
+              fitToken={fitToken}
               colorsAreLinear={job.artifact_metadata?.color_space === 'linear-srgb'}
               editedPointData={editedPointData}
-              showTrajectory={showTrajectory}
               orbitTarget={orbitTarget}
               viewMode={viewMode as any}
-              meshAvailable={meshAvailable}
+              meshAvailable={resolvedMeshAvailable}
               orientMarkers={orientMarkers}
               orientPlane={orientPlane}
               onUpdateClip={setBoxClip}
@@ -587,7 +680,28 @@ export default function ViewerPage() {
             </ErrorBoundary>
             <KeyboardHint />
             <CrossSectionView positions={rawSectionData?.pos ?? null} colors={rawSectionData?.col ?? null} />
-            <DisplayModeBar viewMode={viewMode} setViewMode={setViewMode} meshAvailable={meshAvailable} meshError={job.mesh_error} />
+            <DisplayModeBar viewMode={viewMode} setViewMode={setViewMode} meshAvailable={resolvedMeshAvailable} meshError={job.mesh_error} />
+            <MeshRunPanel
+              runs={meshRuns}
+              legacyMeshAvailable={Boolean(job.mesh_available && !activeMeshRun)}
+              meshSourceAvailable={Boolean(job.mesh_source_available)}
+              highQualityAvailable={Boolean(job.mesh_source_available && job.video_metadata)}
+              busy={meshRunBusy}
+              error={meshRunError}
+              onCreate={handleCreateMeshRun}
+              onCreateHighQuality={() => setSam2PromptOpen(true)}
+              onSelect={handleSelectMeshRun}
+              onCancel={handleCancelMeshRun}
+              onDelete={handleDeleteMeshRun}
+            />
+            {sam2PromptOpen && job.video_metadata && (
+              <Sam2PromptPanel
+                videoUrl={`/api/v1/jobs/${job.id}/video`}
+                metadata={job.video_metadata}
+                onCancel={() => setSam2PromptOpen(false)}
+                onSubmit={handleCreateHighQuality}
+              />
+            )}
             <ControlsPanel
               pointSize={pointSize} setPointSize={setPointSize}
               opacity={opacity} setOpacity={setOpacity}
@@ -616,6 +730,10 @@ export default function ViewerPage() {
               lassoEnabled={lassoEnabled} setLassoEnabled={setLassoEnabled}
               selectedCount={selectedCount}
               annotations={annotations} onClearAnnotations={() => setAnnotations([])}
+              renderSettings={renderSettings}
+              updateRenderSetting={updateRenderSetting}
+              applyRenderPreset={applyRenderPreset}
+              resetRenderSettings={resetRenderSettings}
             />
           </>
         ):isProcessing?(
@@ -632,6 +750,124 @@ export default function ViewerPage() {
           <div className="absolute inset-0 flex items-center justify-center"><div className="text-center"><div className="w-16 h-16 mx-auto mb-4 border-4 border-blue-500 border-t-transparent rounded-full animate-spin" /><p className="text-gray-400 text-sm">正在重建三维模型...</p></div></div>
         )}
       </div>
+    </div>
+  );
+}
+
+function MeshRunPanel({ runs, legacyMeshAvailable, meshSourceAvailable, highQualityAvailable, busy, error, onCreate, onCreateHighQuality, onSelect, onCancel, onDelete }: {
+  runs: MeshRun[];
+  legacyMeshAvailable: boolean;
+  meshSourceAvailable: boolean;
+  highQualityAvailable: boolean;
+  busy: boolean;
+  error: string | null;
+  onCreate: (preset: MeshRunPreset) => void;
+  onCreateHighQuality: () => void;
+  onSelect: (runId: string | null) => void;
+  onCancel: (runId: string) => void;
+  onDelete: (runId: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const presetLabels: Record<MeshRunPreset, string> = {
+    quick: '快速预览',
+    detail: '细节表面',
+    'open-boundary': '开放边界',
+    balanced: '均衡 TSDF',
+    'high-quality': '高质量 · SAM2',
+  };
+  const statusLabels: Record<MeshRun['status'], string> = {
+    queued: '等待中', processing: '生成中', completed: '已完成', failed: '失败', cancelled: '已取消',
+  };
+
+  return (
+    <div className="absolute left-3 bottom-3 z-10">
+      <button onClick={() => setOpen(value => !value)}
+        className="rounded-lg border border-gray-800 bg-gray-900/90 px-3 py-1.5 text-[11px] text-gray-300 backdrop-blur hover:bg-gray-800">
+        重新生成表面{runs.some(run => run.status === 'queued' || run.status === 'processing') ? ' · 进行中' : ''}
+      </button>
+      {open && (
+        <div className="mt-2 w-80 max-h-[65vh] overflow-y-auto rounded-xl border border-gray-800 bg-gray-950/95 p-3 text-[11px] shadow-2xl backdrop-blur">
+          <div className="mb-2 font-semibold text-gray-200">表面重建版本</div>
+          <p className="mb-3 text-[10px] leading-4 text-gray-500">创建新版本需要 GPU 计算，不会覆盖原始点云或旧表面。</p>
+          <div className="grid grid-cols-2 gap-1 mb-2">
+            {([
+              ['quick', '快速', '约 20 秒–2 分钟'],
+              ['balanced', '均衡（推荐）', 'CUDA TSDF，约 2–8 分钟'],
+              ['detail', '细节', '更高面数与细节'],
+              ['open-boundary', '开放边界', '适合局部扫描'],
+            ] as [MeshRunPreset, string, string][]).map(([preset, label, title]) => {
+              const disabled = busy || (preset === 'balanced' && !meshSourceAvailable);
+              return (
+              <button key={preset} title={preset === 'balanced' && !meshSourceAvailable ? '仅含 mesh-source-v1 的新任务可用' : title} disabled={disabled}
+                onClick={() => onCreate(preset)}
+                className="rounded border border-blue-500/20 bg-blue-500/10 px-1 py-1.5 text-[10px] text-blue-300 hover:bg-blue-500/20 disabled:cursor-not-allowed disabled:opacity-30">
+                {label}
+              </button>
+              );
+            })}
+          </div>
+          {!meshSourceAvailable && <p className="mb-3 text-[9px] text-gray-600">均衡 TSDF 仅新任务可用；历史作业缺少深度、置信度和相机参数。</p>}
+          <button onClick={onCreateHighQuality} disabled={busy || !highQualityAvailable}
+            title={!highQualityAvailable ? '高质量需要新任务的深度、置信度与相机元数据' : '用 SAM2 标记保留/排除区域后进行 TSDF 重建'}
+            className="mb-2 w-full rounded border border-purple-500/30 bg-purple-500/10 px-2 py-1.5 text-left text-[10px] text-purple-300 hover:bg-purple-500/20 disabled:cursor-not-allowed disabled:opacity-30">
+            高质量 · SAM2 区域标记重建
+          </button>
+          {error && <div className="mb-2 rounded bg-red-500/10 px-2 py-1 text-[10px] text-red-300">{error}</div>}
+          {legacyMeshAvailable && (
+            <button onClick={() => onSelect(null)} disabled={busy}
+              className="mb-2 w-full rounded bg-gray-800/60 px-2 py-1.5 text-left text-[10px] text-gray-400 hover:text-white">
+              当前原始表面 · 旧版兼容结果
+            </button>
+          )}
+          <div className="space-y-2">
+            {runs.map(run => (
+              <div key={run.id} className={`rounded-lg border p-2 ${run.is_active ? 'border-blue-500/40 bg-blue-500/10' : 'border-gray-800 bg-gray-900/60'}`}>
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-gray-300">{presetLabels[run.preset]}</span>
+                  <span className={`text-[9px] ${run.status === 'failed' ? 'text-red-400' : run.status === 'completed' ? 'text-green-400' : 'text-amber-400'}`}>
+                    {statusLabels[run.status]}{run.is_active ? ' · 当前' : ''}
+                  </span>
+                </div>
+                {(run.status === 'queued' || run.status === 'processing') && (
+                  <div className="mt-1.5">
+                    <div className="h-1 overflow-hidden rounded bg-gray-800"><div className="h-full bg-blue-500" style={{ width: `${Math.max(2, run.progress * 100)}%` }} /></div>
+                    <div className="mt-1 flex justify-between text-[9px] text-gray-600"><span>{run.detail}</span><span>{Math.round(run.progress * 100)}%</span></div>
+                  </div>
+                )}
+                {run.error_message && <div className="mt-1 text-[9px] text-red-400/80">{run.error_message}</div>}
+                {run.status === 'completed' && (
+                  <div className="mt-1 flex flex-wrap items-center gap-1 text-[9px] text-gray-500">
+                    {typeof run.stats?.entity_qualified === 'boolean' && (
+                      <span className={`rounded px-1 ${run.stats.entity_qualified ? 'bg-green-500/15 text-green-300' : 'bg-gray-700/40 text-gray-400'}`}>
+                        {run.stats.entity_qualified ? '实体' : '表面'}
+                      </span>
+                    )}
+                    {run.stats?.mesh_triangles ? <span>{run.stats.mesh_triangles.toLocaleString()} 面</span> : null}
+                    {typeof run.stats?.boundary_edges === 'number' && run.stats.boundary_edges > 0 ? <span>{run.stats.boundary_edges} 边界边</span> : null}
+                    {typeof run.stats?.watertight === 'boolean' && <span>{run.stats.watertight ? '水密' : '非水密'}</span>}
+                    {typeof run.stats?.coverage === 'number' ? <span>覆盖 {(run.stats.coverage * 100).toFixed(0)}%</span> : null}
+                  </div>
+                )}
+                <div className="mt-2 flex gap-1">
+                  {run.status === 'completed' && !run.is_active && (
+                    <button onClick={() => onSelect(run.id)} disabled={busy}
+                      className="rounded bg-blue-500/15 px-2 py-1 text-[9px] text-blue-300">查看此版本</button>
+                  )}
+                  {(run.status === 'queued' || run.status === 'processing') && (
+                    <button onClick={() => onCancel(run.id)} disabled={busy || run.cancel_requested}
+                      className="rounded bg-amber-500/10 px-2 py-1 text-[9px] text-amber-300">{run.cancel_requested ? '取消中' : '取消'}</button>
+                  )}
+                  {(run.status === 'failed' || run.status === 'cancelled') && (
+                    <button onClick={() => onDelete(run.id)} disabled={busy}
+                      className="rounded bg-red-500/10 px-2 py-1 text-[9px] text-red-300">删除记录</button>
+                  )}
+                </div>
+              </div>
+            ))}
+            {!runs.length && <div className="py-3 text-center text-[10px] text-gray-600">暂无独立表面版本</div>}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

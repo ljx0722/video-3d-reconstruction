@@ -6,6 +6,8 @@ from fastapi import APIRouter, UploadFile, File, Form, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.database import get_db
 from app.models.job import Job
+from app.models.mesh_run import MeshRun
+from app.services.mesh_source_service import load_mesh_source_manifest
 from app.schemas.job import JobSettings
 from app.services import storage_service
 from sqlalchemy import select, desc
@@ -72,7 +74,7 @@ async def upload_job(
 async def list_jobs(db: AsyncSession = Depends(get_db)):
     result = await db.execute(select(Job).order_by(desc(Job.created_at)).limit(50))
     jobs = result.scalars().all()
-    return [_job_to_response(j) for j in jobs]
+    return [await _job_to_response_with_mesh_run(j, db) for j in jobs]
 
 
 @router.get("/jobs/{job_id}", response_model=dict)
@@ -81,7 +83,7 @@ async def get_job(job_id: str, db: AsyncSession = Depends(get_db)):
     job = result.scalar_one_or_none()
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
-    return _job_to_response(job)
+    return await _job_to_response_with_mesh_run(job, db)
 
 
 @router.get("/jobs/{job_id}/video")
@@ -118,6 +120,37 @@ async def delete_job(job_id: str, db: AsyncSession = Depends(get_db)):
     return {"ok": True}
 
 
+async def _job_to_response_with_mesh_run(job: Job, db: AsyncSession) -> dict:
+    response = _job_to_response(job)
+    active_result = await db.execute(
+        select(MeshRun).where(
+            MeshRun.job_id == job.id,
+            MeshRun.status == "completed",
+            MeshRun.active_slot == job.id,
+        )
+    )
+    active_mesh_run = active_result.scalar_one_or_none()
+    if active_mesh_run:
+        response.update({
+            "mesh_available": True,
+            "mesh_url": f"/files/{job.id}/mesh-runs/{active_mesh_run.id}/result.glb",
+            "active_mesh_run_id": active_mesh_run.id,
+            "mesh_stats": (
+                json.loads(active_mesh_run.stats_json) if active_mesh_run.stats_json else None
+            ),
+        })
+    manifest = load_mesh_source_manifest(job.id)
+    response["mesh_source_available"] = manifest is not None
+    if manifest and manifest.get("source_fps"):
+        response["video_metadata"] = {
+            "source_fps": manifest.get("source_fps"),
+            "source_frame_count": manifest.get("source_frame_count"),
+            "source_width": manifest.get("source_width"),
+            "source_height": manifest.get("source_height"),
+        }
+    return response
+
+
 def _job_to_response(job: Job) -> dict:
     settings = None
     if job.settings:
@@ -127,7 +160,7 @@ def _job_to_response(job: Job) -> dict:
             pass
     job_dir = os.path.join(storage_service.settings.upload_dir, job.id)
     point_cloud_available = os.path.isfile(os.path.join(job_dir, "result.glb"))
-    mesh_available = os.path.isfile(os.path.join(job_dir, "result_mesh.glb"))
+    legacy_mesh_available = os.path.isfile(os.path.join(job_dir, "result_mesh.glb"))
     mesh_error = settings.get("_mesh_error") if settings else None
     artifact_metadata = settings.get(_ARTIFACT_METADATA_KEY) if settings else None
     mesh_stats = settings.get(_MESH_STATS_KEY) if settings else None
@@ -138,7 +171,9 @@ def _job_to_response(job: Job) -> dict:
         "settings": settings,
         "result_url": f"/files/{job.id}/result.glb",
         "point_cloud_available": point_cloud_available,
-        "mesh_available": mesh_available,
+        "mesh_available": legacy_mesh_available,
+        "mesh_url": f"/files/{job.id}/result_mesh.glb" if legacy_mesh_available else None,
+        "active_mesh_run_id": None,
         "mesh_error": mesh_error,
         "artifact_metadata": artifact_metadata,
         "mesh_stats": mesh_stats,

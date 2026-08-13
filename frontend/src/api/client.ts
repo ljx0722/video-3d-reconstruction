@@ -1,3 +1,5 @@
+import type { Job, MeshRun, MeshRunPreset } from '../types';
+
 const API_BASE = '/api/v1';
 
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
@@ -9,6 +11,7 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
     const body = await res.json().catch(() => ({}));
     throw new Error(body.detail || `Request failed: ${res.status}`);
   }
+  if (res.status === 204) return undefined as T;
   return res.json();
 }
 
@@ -46,11 +49,11 @@ export async function uploadVideo(
 }
 
 export function listJobs() {
-  return request<any[]>('/jobs');
+  return request<Job[]>('/jobs');
 }
 
 export function getJob(id: string) {
-  return request<any>(`/jobs/${id}`);
+  return request<Job>(`/jobs/${id}`);
 }
 
 export function deleteJob(id: string) {
@@ -63,4 +66,30 @@ export function getResultUrl(jobId: string) {
 
 export function getMeshUrl(jobId: string) {
   return `/files/${jobId}/result_mesh.glb`;
+}
+
+export function listMeshRuns(jobId: string) {
+  return request<MeshRun[]>(`/jobs/${jobId}/mesh-runs`);
+}
+
+export function createMeshRun(jobId: string, preset: MeshRunPreset, config: Record<string, unknown> = {}) {
+  return request<MeshRun>(`/jobs/${jobId}/mesh-runs`, {
+    method: 'POST',
+    body: JSON.stringify({ preset, config }),
+  });
+}
+
+export function cancelMeshRun(jobId: string, runId: string) {
+  return request<MeshRun>(`/jobs/${jobId}/mesh-runs/${runId}/cancel`, { method: 'POST' });
+}
+
+export function deleteMeshRun(jobId: string, runId: string) {
+  return request<void>(`/jobs/${jobId}/mesh-runs/${runId}`, { method: 'DELETE' });
+}
+
+export function selectActiveMeshRun(jobId: string, runId: string | null) {
+  return request<{ active_mesh_run_id: string | null; mesh_url: string | null }>(`/jobs/${jobId}/active-mesh`, {
+    method: 'PATCH',
+    body: JSON.stringify({ run_id: runId }),
+  });
 }

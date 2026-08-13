@@ -46,6 +46,8 @@ lingbot-map 和 checkpoint 的推荐位置保持为：
 - `/root/lingbot-map`
 - `/root/lingbot-map/checkpoint/lingbot-map.pt`
 
+生产 Worker 默认将视频推理与 MeshRun 分开调度：点云上传后父作业完成，Backend 自动创建“快速” MeshRun；Worker 仅在视频队列空闲时一次认领一个 MeshRun，并通过 45 秒心跳续租。历史 `result.glb` 已在 artifact-v2 中完成对齐，重建时不得再次应用 alignment；`linear-srgb` 颜色也不得二次转换。紧急回滚到旧固定 Mesh 流程时可临时在 root-only 环境文件设置 `LEGACY_INLINE_MESH=1`，稳定后应移除该开关。
+
 ## 固定 commit 发布
 
 不要下载 `master` 的浮动版本。将 Worker、Mesh 模块和本次使用的 `lingbot_map.vis.glb_export` 放进同一个固定提交发布目录；新建独立 venv 复用现有 Torch/CUDA，先自检，再原子切换：
@@ -154,6 +156,25 @@ MODEL_PATH=/root/lingbot-map/checkpoint/lingbot-map.pt
 SEALOS_BACKEND_URL=https://video2gauss.sealoshzh.site
 GPU_SECRET=<same-secret-as-sealos>
 ```
+
+## SAM2 高质量重建（可选依赖）
+
+“高质量 · SAM2 区域标记”档位是可选的：只有当 Worker 环境配置了 SAM2 checkpoint 时才可用，未配置时 Worker 会在认领到 `use_sam2` 的 MeshRun 时**明确失败**（返回 `SAM2_CHECKPOINT is not configured`），绝不会静默退化成普通 TSDF。因此没有 checkpoint 的实例仍可安全运行快速/均衡/细节/开放边界档。
+
+需要时在 root-only 环境文件追加（全部指向官方预训练 SAM2.1 权重，不自动下载未知权重）：
+
+```text
+SAM2_CHECKPOINT=/root/lingbot-map/checkpoint/sam2.1_hiera_large.pt
+SAM2_MODEL_CFG=sam2.1_hiera_l.yaml
+SAM2_DEVICE=cuda
+```
+
+约束：
+
+- `SAM2_CHECKPOINT` 必须是实例上已存在的文件，`SAM2_MODEL_CFG` 指向仓库内或已安装的 SAM2 配置；两者都不能省略。
+- Worker 还需要 `pip install -e .` 安装官方 SAM2（`torch>=2.5.1`、`torchvision>=0.20.1`），并在推理前后释放显存。与 LingBot 推理串行，禁止同时占用 3090。
+- 用户提示坐标是原视频像素坐标（`normalize_coords=True` 由 SAM2 内部归一化），mask 会先按 LingBot `crop` 预处理几何对齐到 sidecar 尺寸，再与 depth/confidence 同步过滤进入 TSDF。
+- SAM2 只做区域分割与动态区清理，不承担三维表面重建；其输出是逐帧压缩 bitmask，在 Worker 内存中直接消费，不回传浏览器、不落盘为第二份 RGB。
 
 ## 发布验收
 

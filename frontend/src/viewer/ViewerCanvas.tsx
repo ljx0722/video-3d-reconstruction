@@ -15,6 +15,8 @@ export interface ActiveBounds {
 
 interface Props {
   jobId: string;
+  pointUrl?: string;
+  meshUrl?: string | null;
   pointSize: number;
   opacity?: number;
   onPointsReady?: (mesh: THREE.Points, count?: number) => void;
@@ -25,9 +27,33 @@ interface Props {
   showGrid?: boolean;
   showTrajectory?: boolean;
   bloomStrength?: number;
+  bloomThreshold?: number;
+  bloomSmoothing?: number;
   exposure?: number;
+  backgroundColor?: string;
+  fov?: number;
+  lightIntensity?: number;
+  ambientLight?: number;
+  keyLight?: number;
+  fillLight?: number;
+  rimLight?: number;
   fitToken?: number;
   edgeThreshold?: number;
+  edgeColor?: string;
+  edgeOpacity?: number;
+  gaussianRadius?: number;
+  gaussianOpacity?: number;
+  gaussianFalloff?: number;
+  gaussianEdgeCutoff?: number;
+  gaussianBlend?: 'normal' | 'additive';
+  gaussianDepthWrite?: boolean;
+  pointShape?: 'square' | 'circle';
+  pointDepthTest?: boolean;
+  surfaceRoughness?: number;
+  surfaceMetalness?: number;
+  surfaceColorBrightness?: number;
+  surfaceFlatShading?: boolean;
+  surfaceDoubleSide?: boolean;
   colorsAreLinear?: boolean;
   editedPointData?: { pos: Float32Array; col: Float32Array } | null;
   orbitTarget?: [number, number, number];
@@ -472,14 +498,22 @@ function CameraRefReporter({ onCameraRef }: { onCameraRef?: (cam: THREE.Camera) 
   return null;
 }
 
-function RendererSettings({ exposure }: { exposure: number }) {
+function RendererSettings({ exposure, fov }: { exposure: number; fov: number }) {
   const gl = useThree(state => state.gl);
+  const camera = useThree(state => state.camera);
 
   useEffect(() => {
     gl.toneMapping = THREE.ACESFilmicToneMapping;
     gl.outputColorSpace = THREE.SRGBColorSpace;
     gl.toneMappingExposure = exposure;
   }, [gl, exposure]);
+
+  useEffect(() => {
+    if (camera instanceof THREE.PerspectiveCamera) {
+      camera.fov = fov;
+      camera.updateProjectionMatrix();
+    }
+  }, [camera, fov]);
 
   return null;
 }
@@ -542,9 +576,15 @@ function AxesHelper3D() {
 }
 
 export default function ViewerCanvas({
-  jobId, pointSize, opacity = 1, onPointsReady, onMeshReady,
+  jobId, pointUrl: pointUrlOverride, meshUrl: meshUrlOverride, pointSize, opacity = 1, onPointsReady, onMeshReady,
   boxClip, showAxes, orthographic = false, showGrid, showTrajectory = true,
-  bloomStrength = 0, exposure = 1, fitToken = 0, edgeThreshold, colorsAreLinear = false, editedPointData = null, orbitTarget = [0, 0, 0], viewMode = 'points', meshAvailable = false,
+  bloomStrength = 0, bloomThreshold = 0.9, bloomSmoothing = 0.05,
+  exposure = 1, backgroundColor = '#101923', fov = 50,
+  lightIntensity = 1, ambientLight = 0.35, keyLight = 2.2, fillLight = 1.1, rimLight = 1.5,
+  fitToken = 0, edgeThreshold, edgeColor, edgeOpacity, colorsAreLinear = false,
+  gaussianRadius, gaussianOpacity, gaussianFalloff, gaussianEdgeCutoff, gaussianBlend, gaussianDepthWrite,
+  pointShape, pointDepthTest, surfaceRoughness, surfaceMetalness, surfaceColorBrightness, surfaceFlatShading, surfaceDoubleSide,
+  editedPointData = null, orbitTarget = [0, 0, 0], viewMode = 'points', meshAvailable = false,
   orientMarkers = null, orientPlane = null, onUpdateClip,
   lassoEnabled = false, annotations = [], onCameraRef,
 }: Props) {
@@ -566,8 +606,8 @@ export default function ViewerCanvas({
   }, [viewMode]) as 'points' | 'gaussian' | 'mesh' | 'wireframe';
 
   const artifactKey = normalizedViewMode === 'mesh' || normalizedViewMode === 'wireframe' ? 'mesh' : 'points';
-  const pointUrl = getResultUrl(jobId);
-  const meshUrl = getMeshUrl(jobId);
+  const pointUrl = pointUrlOverride || getResultUrl(jobId);
+  const meshUrl = meshUrlOverride || getMeshUrl(jobId);
   const modelUrl = artifactKey === 'mesh' && meshAvailable ? meshUrl : pointUrl;
   const handleCameras = useCallback((pos: Float32Array) => setCamPositions(pos), []);
   const handleBoundsReady = useCallback((bounds: ActiveBounds) => {
@@ -605,20 +645,20 @@ export default function ViewerCanvas({
       className="!absolute inset-0"
       gl={{ preserveDrawingBuffer: true, antialias: false, localClippingEnabled: true, toneMapping: THREE.ACESFilmicToneMapping, outputColorSpace: THREE.SRGBColorSpace }}
       frameloop="always"
-      style={{ background: '#101923' }}
+      style={{ background: backgroundColor }}
     >
-      <color attach="background" args={['#101923']} />
-      <RendererSettings exposure={exposure} />
-      <PerspectiveCamera makeDefault={!orthographic} position={[2, 1, 3]} fov={50} near={0.01} far={200} />
+      <color attach="background" args={[backgroundColor]} />
+      <RendererSettings exposure={exposure} fov={fov} />
+      <PerspectiveCamera makeDefault={!orthographic} position={[2, 1, 3]} fov={fov} near={0.01} far={200} />
       <OrthographicCamera makeDefault={orthographic} position={[2, 1, 3]} zoom={80} near={0.01} far={200} />
       <CameraRefReporter onCameraRef={onCameraRef} />
       <CameraFitter bounds={activeBounds?.url === modelUrl ? activeBounds.bounds : null} artifactKey={modelUrl} orthographic={orthographic} fitToken={fitToken} target={targetRef.current} />
 
-      <ambientLight intensity={0.35} />
-      <hemisphereLight args={['#b9d4ff', '#182231', 0.6]} />
-      <directionalLight position={[5, 7, 6]} intensity={2.2} color="#fff3df" />
-      <directionalLight position={[-5, 3, 4]} intensity={1.1} color="#b9d7ff" />
-      <directionalLight position={[1, 5, -6]} intensity={1.5} color="#d9e7ff" />
+      <ambientLight intensity={ambientLight * lightIntensity} />
+      <hemisphereLight args={['#b9d4ff', '#182231', 0.6 * lightIntensity]} />
+      <directionalLight position={[5, 7, 6]} intensity={keyLight * lightIntensity} color="#fff3df" />
+      <directionalLight position={[-5, 3, 4]} intensity={fillLight * lightIntensity} color="#b9d7ff" />
+      <directionalLight position={[1, 5, -6]} intensity={rimLight * lightIntensity} color="#d9e7ff" />
 
       <Suspense fallback={<LoadingFallback />}>
         <ModelLoader
@@ -631,6 +671,21 @@ export default function ViewerCanvas({
           onBoundsReady={handleBoundsReady}
           editedPointData={artifactKey === 'points' ? editedPointData : null}
           edgeThreshold={edgeThreshold}
+          edgeColor={edgeColor}
+          edgeOpacity={edgeOpacity}
+          gaussianRadius={gaussianRadius}
+          gaussianOpacity={gaussianOpacity}
+          gaussianFalloff={gaussianFalloff}
+          gaussianEdgeCutoff={gaussianEdgeCutoff}
+          gaussianBlend={gaussianBlend}
+          gaussianDepthWrite={gaussianDepthWrite}
+          pointShape={pointShape}
+          pointDepthTest={pointDepthTest}
+          surfaceRoughness={surfaceRoughness}
+          surfaceMetalness={surfaceMetalness}
+          surfaceColorBrightness={surfaceColorBrightness}
+          surfaceFlatShading={surfaceFlatShading}
+          surfaceDoubleSide={surfaceDoubleSide}
           colorsAreLinear={colorsAreLinear}
           clipPlanes={threeClipPlanes}
           viewMode={normalizedViewMode}
@@ -664,7 +719,7 @@ export default function ViewerCanvas({
 
       <AnnotationLabels annotations={annotations} />
 
-      <BloomEffect bloomStrength={bloomStrength} />
+      <BloomEffect bloomStrength={bloomStrength} bloomThreshold={bloomThreshold} bloomSmoothing={bloomSmoothing} />
     </Canvas>
   );
 }

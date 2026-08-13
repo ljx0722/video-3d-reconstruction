@@ -5,6 +5,7 @@ from unittest import mock
 import numpy as np
 
 from gpu_worker.mesh_builder import (
+    MeshBuildConfig,
     MeshCandidateError,
     MeshInputError,
     _prepare_inputs,
@@ -12,6 +13,7 @@ from gpu_worker.mesh_builder import (
     _srgb_to_linear,
     _validate_mesh_candidate,
     build_mesh,
+    extract_legacy_point_glb,
 )
 
 
@@ -122,6 +124,63 @@ class MeshInputTests(unittest.TestCase):
             0,
         )
         self.assertEqual(pointmap_stats["input_points"], 9)
+
+    def test_preserves_linear_colors_for_artifact_v2(self):
+        source = np.array([[0.5, 0.25, 0.75], [0.1, 0.2, 0.3]], dtype=np.float64)
+        _, converted, stats = _prepare_inputs(
+            {
+                "world_points_from_depth": np.zeros((2, 3), dtype=np.float32),
+                "images": source,
+                "input_color_space": "linear-srgb",
+                "source_prealigned": True,
+            },
+            0,
+        )
+        np.testing.assert_allclose(converted, source)
+        self.assertEqual(stats["source_prealigned"], 1)
+        self.assertEqual(stats["alignment_applied"], 0)
+
+    def test_rejects_second_alignment_for_prealigned_source(self):
+        with self.assertRaisesRegex(MeshInputError, "不得再次应用"):
+            _prepare_inputs(
+                {
+                    "world_points_from_depth": np.zeros((2, 3)),
+                    "source_prealigned": True,
+                    "alignment_matrix": np.eye(4),
+                },
+                0,
+            )
+
+    def test_validates_typed_mesh_config(self):
+        config = MeshBuildConfig.from_mapping({"poisson_depth": 8, "target_triangles": 300_000})
+        self.assertEqual(config.poisson_depth, 8)
+        with self.assertRaisesRegex(MeshInputError, "未知 Mesh 参数"):
+            MeshBuildConfig.from_mapping({"unknown": 1})
+        with self.assertRaisesRegex(MeshInputError, "严格递增"):
+            MeshBuildConfig.from_mapping({"bpa_radius_multipliers": [3, 2, 6]})
+
+    def test_extracts_point_nodes_and_skips_triangle_camera_geometry(self):
+        import trimesh
+
+        points = trimesh.points.PointCloud(
+            vertices=np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]]),
+            colors=np.array([[128, 64, 32, 255], [255, 255, 255, 255]], dtype=np.uint8),
+        )
+        camera = trimesh.creation.box(extents=[0.1, 0.1, 0.1])
+        scene = trimesh.Scene()
+        transform = np.eye(4)
+        transform[:3, 3] = [10, 2, 3]
+        scene.add_geometry(points, node_name="points", transform=transform)
+        scene.add_geometry(camera, node_name="camera")
+
+        extracted, stats = extract_legacy_point_glb(scene.export(file_type="glb"), "linear-srgb")
+        np.testing.assert_allclose(
+            extracted["world_points_from_depth"], [[10, 2, 3], [11, 2, 3]]
+        )
+        self.assertEqual(stats["glb_point_nodes"], 1)
+        self.assertEqual(stats["glb_triangle_nodes_skipped"], 1)
+        self.assertTrue(extracted["source_prealigned"])
+        self.assertEqual(extracted["input_color_space"], "linear-srgb")
 
     def test_reports_missing_open3d(self):
         with tempfile.TemporaryDirectory() as tmpdir, mock.patch.dict(

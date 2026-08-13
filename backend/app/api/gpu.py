@@ -12,6 +12,8 @@ from sqlalchemy import select, update
 from app.config import settings
 from app.database import async_session
 from app.models.job import Job
+from app.schemas.mesh_run import MeshRunCreate
+from app.services.mesh_run_service import create_mesh_run
 
 router = APIRouter(prefix="/api/v1/gpu")
 logger = logging.getLogger(__name__)
@@ -199,6 +201,17 @@ async def upload_result_raw(job_id: str, request: Request):
         job.status = "processing"
         job.progress = max(job.progress or 0.0, 0.9)
         job.result_path = f"results/{job_id}/pointcloud.glb"
+        await session.flush()
+        try:
+            source_color_space = request.headers.get("x-artifact-color-space")
+            await create_mesh_run(
+                session,
+                job,
+                MeshRunCreate(preset="quick"),
+                source_color_space=source_color_space,
+            )
+        except Exception as exc:
+            logger.warning("Default MeshRun creation deferred for job %s: %s", job_id, exc)
         await session.commit()
 
     logger.info("GPU result saved for job %s: %.1f MB", job_id, len(glb_data) / 1024 / 1024)

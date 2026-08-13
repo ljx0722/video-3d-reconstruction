@@ -4,7 +4,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.database import engine
-from app.models.job import Base
+from app.models import Base, MeshRun  # noqa: F401
 from app.api.router import router
 from app.config import settings
 

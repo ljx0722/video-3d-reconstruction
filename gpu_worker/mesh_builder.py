@@ -4,8 +4,8 @@ import argparse
 import io
 import logging
 import tempfile
-from dataclasses import dataclass, field
-from typing import Any
+from dataclasses import dataclass, field, fields
+from typing import Any, Callable, Mapping
 
 import numpy as np
 
@@ -16,6 +16,72 @@ _MIN_CANDIDATE_TRIANGLES = 500
 _MAX_FINAL_TRIANGLES = 150_000
 _MIN_CANDIDATE_SCALE_RATIO = 0.25
 _MAX_CANDIDATE_SCALE_RATIO = 5.0
+MESH_BUILDER_VERSION = "mesh-builder-v2"
+
+
+@dataclass(frozen=True)
+class MeshBuildConfig:
+    algorithm: str = "auto"
+    voxel_size_ratio: float = 0.0025
+    outlier_nb_neighbors: int = 30
+    outlier_std_ratio: float = 2.0
+    normal_radius_multiplier: float = 3.0
+    normal_max_nn: int = 30
+    normal_orientation_k: int = 30
+    poisson_depth: int = 7
+    poisson_scale: float = 1.05
+    density_quantile: float = 0.05
+    bpa_radius_multipliers: tuple[float, float, float] = (1.5, 3.0, 6.0)
+    component_min_triangles: int = 500
+    component_min_area_ratio: float = 0.01
+    target_triangles: int = 150_000
+    color_neighbors: int = 4
+
+    @classmethod
+    def from_mapping(cls, value: Mapping[str, Any] | None) -> "MeshBuildConfig":
+        if value is None:
+            return cls()
+        allowed = {item.name for item in fields(cls)}
+        unknown = set(value) - allowed
+        if unknown:
+            raise MeshInputError(f"未知 Mesh 参数: {sorted(unknown)}")
+        data = dict(value)
+        if "bpa_radius_multipliers" in data:
+            data["bpa_radius_multipliers"] = tuple(data["bpa_radius_multipliers"])
+        config = cls(**data)
+        config.validate()
+        return config
+
+    def validate(self) -> None:
+        ranges = {
+            "voxel_size_ratio": (self.voxel_size_ratio, 0.0005, 0.01),
+            "outlier_nb_neighbors": (self.outlier_nb_neighbors, 10, 50),
+            "outlier_std_ratio": (self.outlier_std_ratio, 1.0, 3.0),
+            "normal_radius_multiplier": (self.normal_radius_multiplier, 2.0, 8.0),
+            "normal_max_nn": (self.normal_max_nn, 20, 100),
+            "normal_orientation_k": (self.normal_orientation_k, 10, 100),
+            "poisson_depth": (self.poisson_depth, 6, 9),
+            "poisson_scale": (self.poisson_scale, 1.01, 1.2),
+            "density_quantile": (self.density_quantile, 0.0, 0.15),
+            "component_min_triangles": (self.component_min_triangles, 50, 2000),
+            "component_min_area_ratio": (self.component_min_area_ratio, 0.0, 0.05),
+            "target_triangles": (self.target_triangles, 50_000, 500_000),
+            "color_neighbors": (self.color_neighbors, 1, 16),
+        }
+        if self.algorithm not in {"auto", "poisson", "bpa"}:
+            raise MeshInputError(f"不支持的 Mesh 算法: {self.algorithm}")
+        for name, (value, minimum, maximum) in ranges.items():
+            if not np.isfinite(value) or not minimum <= value <= maximum:
+                raise MeshInputError(f"Mesh 参数 {name} 超出范围 [{minimum}, {maximum}]")
+        radii = self.bpa_radius_multipliers
+        if len(radii) != 3 or not all(np.isfinite(value) and 1 <= value <= 8 for value in radii):
+            raise MeshInputError("BPA 半径倍率必须包含 3 个 [1, 8] 数值")
+        if not radii[0] < radii[1] < radii[2]:
+            raise MeshInputError("BPA 半径倍率必须严格递增")
+
+
+class MeshCancelled(RuntimeError):
+    pass
 
 
 @dataclass
@@ -35,6 +101,71 @@ class MeshInputError(ValueError):
 
 class MeshCandidateError(ValueError):
     pass
+
+
+def extract_legacy_point_glb(
+    source: bytes | bytearray | str,
+    color_space: str = "srgb",
+) -> tuple[dict[str, Any], dict[str, int | str]]:
+    import trimesh
+
+    payload = io.BytesIO(source) if isinstance(source, (bytes, bytearray)) else source
+    scene = trimesh.load(payload, file_type="glb", force="scene", process=False)
+    points_parts: list[np.ndarray] = []
+    color_parts: list[np.ndarray] = []
+    point_nodes = 0
+    skipped_triangle_nodes = 0
+
+    for node_name in scene.graph.nodes_geometry:
+        transform, geometry_name = scene.graph.get(frame_to=node_name)
+        geometry = scene.geometry.get(geometry_name)
+        if geometry is None:
+            continue
+        faces = getattr(geometry, "faces", None)
+        if faces is not None and np.asarray(faces).size:
+            skipped_triangle_nodes += 1
+            continue
+        vertices = np.asarray(getattr(geometry, "vertices", np.empty((0, 3))), dtype=np.float64)
+        if vertices.ndim != 2 or vertices.shape[1] != 3 or len(vertices) == 0:
+            continue
+        matrix = np.asarray(transform, dtype=np.float64)
+        if matrix.shape != (4, 4) or not np.isfinite(matrix).all():
+            raise MeshInputError(f"GLB 节点变换无效: {node_name}")
+        homogeneous = np.concatenate([vertices, np.ones((len(vertices), 1))], axis=1)
+        transformed = homogeneous @ matrix.T
+        w = transformed[:, 3]
+        if not np.all(np.isfinite(w) & (np.abs(w) > np.finfo(np.float64).eps)):
+            raise MeshInputError(f"GLB 节点齐次坐标无效: {node_name}")
+        points_parts.append(transformed[:, :3] / w[:, None])
+
+        colors = getattr(geometry, "colors", None)
+        if colors is None:
+            visual = getattr(geometry, "visual", None)
+            colors = getattr(visual, "vertex_colors", None)
+        color_values = np.asarray(colors) if colors is not None else np.empty((0, 3))
+        if color_values.ndim == 2 and len(color_values) == len(vertices) and color_values.shape[1] >= 3:
+            rgb = color_values[:, :3].astype(np.float64, copy=False)
+            if rgb.size and float(np.max(rgb)) > 1:
+                rgb = rgb / 255.0
+            color_parts.append(np.clip(rgb, 0, 1))
+        else:
+            color_parts.append(np.full((len(vertices), 3), 0.6, dtype=np.float64))
+        point_nodes += 1
+
+    if not points_parts:
+        raise MeshInputError("GLB 中没有可重建的 PointCloud 几何")
+    points = np.concatenate(points_parts, axis=0)
+    colors = np.concatenate(color_parts, axis=0)
+    return {
+        "world_points_from_depth": points,
+        "images": colors,
+        "input_color_space": color_space,
+        "source_prealigned": True,
+    }, {
+        "glb_point_nodes": point_nodes,
+        "glb_triangle_nodes_skipped": skipped_triangle_nodes,
+        "glb_points": len(points),
+    }
 
 
 def _srgb_to_linear(colors: np.ndarray) -> np.ndarray:
@@ -184,6 +315,8 @@ def _prepare_inputs(
         raise MeshInputError(f"点坐标形状无效: {xyz.shape}")
 
     xyz_flat = xyz.reshape(-1, 3).astype(np.float64, copy=False)
+    if vis_pred.get("source_prealigned") and vis_pred.get("alignment_matrix") is not None:
+        raise MeshInputError("已对齐的 GLB 源不得再次应用 alignment_matrix")
     xyz_flat, alignment_applied = _apply_alignment(
         xyz_flat, vis_pred.get("alignment_matrix")
     )
@@ -225,7 +358,13 @@ def _prepare_inputs(
             colors_flat = colors_flat / 255.0
 
     points = xyz_flat[mask]
-    colors = _srgb_to_linear(colors_flat[mask])
+    input_color_space = vis_pred.get("input_color_space", "srgb")
+    if input_color_space == "linear-srgb":
+        colors = np.clip(colors_flat[mask], 0.0, 1.0)
+    elif input_color_space == "srgb":
+        colors = _srgb_to_linear(colors_flat[mask])
+    else:
+        raise MeshInputError(f"不支持的输入颜色空间: {input_color_space}")
     if len(points) >= 1000:
         robust_min, robust_max, robust_diag = _robust_point_bounds(points)
         padding = np.maximum((robust_max - robust_min) * 0.1, robust_diag * 1e-4)
@@ -242,18 +381,25 @@ def _prepare_inputs(
         "confidence_percentile": float(np.clip(conf_pct, 0.0, 100.0)),
         "confidence_cutoff": cutoff,
         "alignment_applied": int(alignment_applied),
+        "source_prealigned": int(bool(vis_pred.get("source_prealigned"))),
+        "input_color_space": input_color_space,
         "color_space": "linear-srgb",
     }
     return points, colors, stats
 
 
-def _ball_pivoting(o3d: Any, pcd: Any, stats: dict[str, int | float | str]) -> Any:
+def _ball_pivoting(
+    o3d: Any,
+    pcd: Any,
+    stats: dict[str, int | float | str],
+    multipliers: tuple[float, float, float] = (1.5, 3.0, 6.0),
+) -> Any:
     distances = np.asarray(pcd.compute_nearest_neighbor_distance(), dtype=np.float64)
     distances = distances[np.isfinite(distances) & (distances > 0)]
     if distances.size == 0:
         raise RuntimeError("无法估算 Ball Pivoting 半径")
     base_radius = float(np.median(distances))
-    radii = [base_radius * 1.5, base_radius * 3.0, base_radius * 6.0]
+    radii = [base_radius * multiplier for multiplier in multipliers]
     stats["ball_pivot_base_radius"] = base_radius
     return o3d.geometry.TriangleMesh.create_from_point_cloud_ball_pivoting(
         pcd, o3d.utility.DoubleVector(radii)
@@ -274,7 +420,10 @@ def _validate_open3d_candidate(mesh: Any, reference_diag: float) -> dict[str, in
 
 
 def _keep_significant_components(
-    mesh: Any, stats: dict[str, int | float | str]
+    mesh: Any,
+    stats: dict[str, int | float | str],
+    minimum_triangles: int = 500,
+    minimum_area_ratio: float = 0.01,
 ) -> None:
     triangle_count = len(mesh.triangles)
     if triangle_count == 0:
@@ -290,8 +439,8 @@ def _keep_significant_components(
     largest_id = int(np.argmax(counts))
     largest_count = int(counts[largest_id])
     largest_area = float(areas[largest_id]) if largest_id < len(areas) else 0.0
-    minimum_count = max(500, int(np.ceil(largest_count * 0.02)))
-    minimum_area = largest_area * 0.01 if np.isfinite(largest_area) else np.inf
+    minimum_count = max(minimum_triangles, int(np.ceil(largest_count * 0.02)))
+    minimum_area = largest_area * minimum_area_ratio if np.isfinite(largest_area) else np.inf
 
     keep_ids = {largest_id}
     for component_id, count in enumerate(counts):
@@ -314,12 +463,17 @@ def _keep_significant_components(
     )
 
 
-def _interpolate_vertex_colors(o3d: Any, pcd: Any, vertices: np.ndarray) -> np.ndarray:
+def _interpolate_vertex_colors(
+    o3d: Any,
+    pcd: Any,
+    vertices: np.ndarray,
+    neighbors: int = 4,
+) -> np.ndarray:
     pcd_tree = o3d.geometry.KDTreeFlann(pcd)
     pcd_colors = np.asarray(pcd.colors, dtype=np.float64)
     mesh_colors = np.full((len(vertices), 3), _srgb_to_linear(np.array(0.6)), dtype=np.float64)
     for index, vertex in enumerate(vertices):
-        count, indices, squared_distances = pcd_tree.search_knn_vector_3d(vertex, 4)
+        count, indices, squared_distances = pcd_tree.search_knn_vector_3d(vertex, neighbors)
         if not count:
             continue
         neighbor_colors = pcd_colors[np.asarray(indices[:count], dtype=np.int64)]
@@ -398,7 +552,27 @@ def _validate_reloaded_glb(
     }
 
 
-def build_mesh(vis_pred: dict[str, Any], conf_pct: float, tmpdir: str) -> MeshBuildResult:
+def build_mesh(
+    vis_pred: dict[str, Any],
+    conf_pct: float,
+    tmpdir: str,
+    config: Mapping[str, Any] | MeshBuildConfig | None = None,
+    progress_callback: Callable[[float, str], None] | None = None,
+    cancel_check: Callable[[], bool] | None = None,
+) -> MeshBuildResult:
+    del tmpdir
+    try:
+        mesh_config = config if isinstance(config, MeshBuildConfig) else MeshBuildConfig.from_mapping(config)
+        mesh_config.validate()
+    except Exception as exc:
+        return MeshBuildResult(error=str(exc))
+
+    def checkpoint(progress: float, detail: str) -> None:
+        if cancel_check and cancel_check():
+            raise MeshCancelled("Mesh reconstruction cancelled")
+        if progress_callback:
+            progress_callback(progress, detail)
+
     try:
         import open3d as o3d
     except ImportError:
@@ -408,8 +582,11 @@ def build_mesh(vis_pred: dict[str, Any], conf_pct: float, tmpdir: str) -> MeshBu
         "open3d_version": getattr(o3d, "__version__", "unknown")
     }
     try:
+        checkpoint(0.05, "正在读取点云")
         points, colors, input_stats = _prepare_inputs(vis_pred, conf_pct)
         stats.update(input_stats)
+        stats["mesh_builder_version"] = MESH_BUILDER_VERSION
+        stats["requested_algorithm"] = mesh_config.algorithm
         logger.info(
             "Mesh input: %d/%d points (confidence cutoff %.6f)",
             len(points),
@@ -436,7 +613,8 @@ def build_mesh(vis_pred: dict[str, Any], conf_pct: float, tmpdir: str) -> MeshBu
         pcd.points = o3d.utility.Vector3dVector(points)
         pcd.colors = o3d.utility.Vector3dVector(colors)
 
-        voxel_size = max(robust_bbox_diag * 0.0025, 1e-9)
+        checkpoint(0.15, "正在降采样点云")
+        voxel_size = max(robust_bbox_diag * mesh_config.voxel_size_ratio, 1e-9)
         pcd = pcd.voxel_down_sample(voxel_size)
         stats["voxel_size"] = voxel_size
         stats["downsampled_points_before_outlier_removal"] = len(pcd.points)
@@ -444,14 +622,15 @@ def build_mesh(vis_pred: dict[str, Any], conf_pct: float, tmpdir: str) -> MeshBu
         if len(pcd.points) < 100:
             raise MeshInputError(f"降采样后有效点数不足: {len(pcd.points)} < 100")
 
-        outlier_neighbors = min(30, len(pcd.points) - 1)
+        checkpoint(0.25, "正在清理离群点")
+        outlier_neighbors = min(mesh_config.outlier_nb_neighbors, len(pcd.points) - 1)
         pcd, retained_indices = pcd.remove_statistical_outlier(
-            nb_neighbors=outlier_neighbors, std_ratio=2.0
+            nb_neighbors=outlier_neighbors, std_ratio=mesh_config.outlier_std_ratio
         )
         stats.update(
             {
                 "outlier_nb_neighbors": outlier_neighbors,
-                "outlier_std_ratio": 2.0,
+                "outlier_std_ratio": mesh_config.outlier_std_ratio,
                 "statistical_inliers": len(retained_indices),
                 "statistical_outliers_removed":
                     int(stats["downsampled_points_before_outlier_removal"]) - len(pcd.points),
@@ -466,14 +645,20 @@ def build_mesh(vis_pred: dict[str, Any], conf_pct: float, tmpdir: str) -> MeshBu
 
         _, _, reconstruction_diag = _robust_point_bounds(np.asarray(pcd.points))
         stats["reconstruction_bbox_diagonal"] = reconstruction_diag
-        radius = max(voxel_size * 3.0, reconstruction_diag * 0.01)
+        checkpoint(0.35, "正在估计点云法线")
+        radius = max(
+            voxel_size * mesh_config.normal_radius_multiplier,
+            reconstruction_diag * 0.01,
+        )
         stats["normal_radius"] = radius
         pcd.estimate_normals(
-            o3d.geometry.KDTreeSearchParamHybrid(radius=radius, max_nn=30)
+            o3d.geometry.KDTreeSearchParamHybrid(
+                radius=radius, max_nn=mesh_config.normal_max_nn
+            )
         )
         try:
             pcd.orient_normals_consistent_tangent_plane(
-                k=min(30, len(pcd.points) - 1)
+                k=min(mesh_config.normal_orientation_k, len(pcd.points) - 1)
             )
         except Exception as exc:
             logger.warning(
@@ -483,43 +668,55 @@ def build_mesh(vis_pred: dict[str, Any], conf_pct: float, tmpdir: str) -> MeshBu
 
         mesh = None
         algorithm = "poisson"
-        try:
-            candidate, densities = o3d.geometry.TriangleMesh.create_from_point_cloud_poisson(
-                pcd, depth=7, scale=1.05, linear_fit=False
-            )
-            density_values = np.asarray(densities, dtype=np.float64)
-            if density_values.size:
-                finite_density = density_values[np.isfinite(density_values)]
-                if finite_density.size:
-                    density_cutoff = float(np.quantile(finite_density, 0.05))
-                    candidate.remove_vertices_by_mask(
-                        ~np.isfinite(density_values) | (density_values < density_cutoff)
-                    )
-                    stats["poisson_density_cutoff"] = density_cutoff
-            candidate = candidate.crop(pcd.get_axis_aligned_bounding_box())
-            _clean_mesh(candidate)
-            candidate_stats = _validate_open3d_candidate(candidate, reconstruction_diag)
-            stats.update(
-                {
-                    "poisson_candidate_vertices": candidate_stats["vertices"],
-                    "poisson_candidate_triangles": candidate_stats["triangles"],
-                    "poisson_candidate_area": candidate_stats["surface_area"],
-                    "poisson_candidate_bbox_ratio": candidate_stats["bbox_scale_ratio"],
-                }
-            )
-            mesh = candidate
-        except Exception as exc:
-            stats["poisson_error"] = str(exc)
-            logger.warning(
-                "Poisson reconstruction did not produce a valid candidate; "
-                "trying Ball Pivoting: %s",
-                exc,
-            )
+        if mesh_config.algorithm in {"auto", "poisson"}:
+            checkpoint(0.45, "正在执行 Poisson 表面重建")
+            try:
+                candidate, densities = o3d.geometry.TriangleMesh.create_from_point_cloud_poisson(
+                    pcd,
+                    depth=mesh_config.poisson_depth,
+                    scale=mesh_config.poisson_scale,
+                    linear_fit=False,
+                )
+                density_values = np.asarray(densities, dtype=np.float64)
+                if density_values.size:
+                    finite_density = density_values[np.isfinite(density_values)]
+                    if finite_density.size and mesh_config.density_quantile > 0:
+                        density_cutoff = float(
+                            np.quantile(finite_density, mesh_config.density_quantile)
+                        )
+                        candidate.remove_vertices_by_mask(
+                            ~np.isfinite(density_values) | (density_values < density_cutoff)
+                        )
+                        stats["poisson_density_cutoff"] = density_cutoff
+                candidate = candidate.crop(pcd.get_axis_aligned_bounding_box())
+                _clean_mesh(candidate)
+                candidate_stats = _validate_open3d_candidate(candidate, reconstruction_diag)
+                stats.update(
+                    {
+                        "poisson_candidate_vertices": candidate_stats["vertices"],
+                        "poisson_candidate_triangles": candidate_stats["triangles"],
+                        "poisson_candidate_area": candidate_stats["surface_area"],
+                        "poisson_candidate_bbox_ratio": candidate_stats["bbox_scale_ratio"],
+                    }
+                )
+                mesh = candidate
+            except MeshCancelled:
+                raise
+            except Exception as exc:
+                stats["poisson_error"] = str(exc)
+                logger.warning(
+                    "Poisson reconstruction did not produce a valid candidate: %s", exc
+                )
+                if mesh_config.algorithm == "poisson":
+                    raise RuntimeError(f"Poisson 未生成有效 Mesh: {exc}") from exc
 
-        if mesh is None:
+        if mesh is None and mesh_config.algorithm in {"auto", "bpa"}:
+            checkpoint(0.60, "正在执行 Ball Pivoting 表面重建")
             algorithm = "ball_pivoting"
             try:
-                candidate = _ball_pivoting(o3d, pcd, stats)
+                candidate = _ball_pivoting(
+                    o3d, pcd, stats, mesh_config.bpa_radius_multipliers
+                )
                 _clean_mesh(candidate)
                 candidate_stats = _validate_open3d_candidate(
                     candidate, reconstruction_diag
@@ -538,28 +735,36 @@ def build_mesh(vis_pred: dict[str, Any], conf_pct: float, tmpdir: str) -> MeshBu
                     f"Poisson 与 Ball Pivoting 均未生成有效 Mesh: {exc}"
                 ) from exc
 
-        _keep_significant_components(mesh, stats)
+        checkpoint(0.72, "正在清理 Mesh 连通分量")
+        _keep_significant_components(
+            mesh,
+            stats,
+            mesh_config.component_min_triangles,
+            mesh_config.component_min_area_ratio,
+        )
         _validate_open3d_candidate(mesh, reconstruction_diag)
 
         triangles_before_cap = len(mesh.triangles)
-        if triangles_before_cap > _MAX_FINAL_TRIANGLES:
+        if triangles_before_cap > mesh_config.target_triangles:
+            checkpoint(0.80, "正在简化 Mesh")
             mesh = mesh.simplify_quadric_decimation(
-                target_number_of_triangles=_MAX_FINAL_TRIANGLES
+                target_number_of_triangles=mesh_config.target_triangles
             )
             _clean_mesh(mesh)
-            if len(mesh.triangles) > _MAX_FINAL_TRIANGLES:
+            if len(mesh.triangles) > mesh_config.target_triangles:
                 mesh = mesh.simplify_quadric_decimation(
-                    target_number_of_triangles=_MAX_FINAL_TRIANGLES
+                    target_number_of_triangles=mesh_config.target_triangles
                 )
                 _clean_mesh(mesh)
         triangles_after_cap = len(mesh.triangles)
-        if triangles_after_cap > _MAX_FINAL_TRIANGLES:
+        if triangles_after_cap > mesh_config.target_triangles:
             raise RuntimeError(
-                f"Mesh 三角面无法压缩到上限: {triangles_after_cap} > {_MAX_FINAL_TRIANGLES}"
+                "Mesh 三角面无法压缩到上限: "
+                f"{triangles_after_cap} > {mesh_config.target_triangles}"
             )
         stats.update(
             {
-                "triangle_cap": _MAX_FINAL_TRIANGLES,
+                "triangle_cap": mesh_config.target_triangles,
                 "mesh_triangles_before_cap": triangles_before_cap,
                 "mesh_triangles_after_cap": triangles_after_cap,
             }
@@ -580,7 +785,10 @@ def build_mesh(vis_pred: dict[str, Any], conf_pct: float, tmpdir: str) -> MeshBu
         vertex_normals = vertex_normals / normal_lengths[:, None]
         mesh.vertex_normals = o3d.utility.Vector3dVector(vertex_normals)
 
-        mesh_colors = _interpolate_vertex_colors(o3d, pcd, mesh_vertices)
+        checkpoint(0.88, "正在插值 Mesh 颜色")
+        mesh_colors = _interpolate_vertex_colors(
+            o3d, pcd, mesh_vertices, mesh_config.color_neighbors
+        )
         mesh.vertex_colors = o3d.utility.Vector3dVector(mesh_colors)
 
         stats.update(
@@ -591,7 +799,7 @@ def build_mesh(vis_pred: dict[str, Any], conf_pct: float, tmpdir: str) -> MeshBu
                 "mesh_surface_area": final_metrics["surface_area"],
                 "mesh_bbox_diagonal": final_metrics["bbox_diagonal"],
                 "mesh_bbox_scale_ratio": final_metrics["bbox_scale_ratio"],
-                "color_interpolation_neighbors": 4,
+                "color_interpolation_neighbors": mesh_config.color_neighbors,
             }
         )
         logger.info(
@@ -601,6 +809,7 @@ def build_mesh(vis_pred: dict[str, Any], conf_pct: float, tmpdir: str) -> MeshBu
             len(mesh.triangles),
         )
 
+        checkpoint(0.95, "正在导出 Mesh GLB")
         import trimesh
 
         faces = np.asarray(mesh.triangles, dtype=np.int64)
@@ -629,6 +838,19 @@ def build_mesh(vis_pred: dict[str, Any], conf_pct: float, tmpdir: str) -> MeshBu
             expected_bbox_diag=float(final_metrics["bbox_diagonal"]),
         )
         stats.update(reload_stats)
+
+        try:
+            from mesh_quality import compute_mesh_quality
+        except ImportError:
+            from gpu_worker.mesh_quality import compute_mesh_quality
+        quality = compute_mesh_quality(
+            exported_mesh,
+            source_points=np.asarray(pcd.points, dtype=np.float64),
+            scene_diagonal=float(reconstruction_diag),
+            voxel_size=float(voxel_size),
+        )
+        stats.update(quality)
+
         stats["glb_bytes"] = len(data)
         return MeshBuildResult(data=data, stats=stats)
     except Exception as exc:
