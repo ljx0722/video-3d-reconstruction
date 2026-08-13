@@ -228,8 +228,15 @@ def build_tsdf_mesh(
                 depth = np.ascontiguousarray(depth)
                 depth_image = o3d.t.geometry.Image(o3d.core.Tensor(depth, device=device))
                 color_image = o3d.t.geometry.Image(o3d.core.Tensor(color, device=device))
-                intrinsic = o3d.core.Tensor(np.asarray(chunk["intrinsic"][local_index], dtype=np.float64), device=device)
-                extrinsic = o3d.core.Tensor(c2w_to_w2c(chunk["c2w"][local_index]), device=device)
+                camera_device = o3d.core.Device("CPU:0")
+                intrinsic = o3d.core.Tensor(
+                    np.asarray(chunk["intrinsic"][local_index], dtype=np.float64),
+                    device=camera_device,
+                )
+                extrinsic = o3d.core.Tensor(
+                    c2w_to_w2c(chunk["c2w"][local_index]),
+                    device=camera_device,
+                )
                 frustum = vbg.compute_unique_block_coordinates(
                     depth_image, intrinsic, extrinsic, 1.0, depth_max, truncation_multiplier
                 )
