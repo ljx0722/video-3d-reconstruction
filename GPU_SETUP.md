@@ -184,7 +184,7 @@ SAM2_DEVICE=cuda
 约束：
 
 - `SAM2_CHECKPOINT` 必须是实例上已存在的文件，`SAM2_MODEL_CFG` 指向仓库内或已安装的 SAM2 配置；两者都不能省略。
-- Worker 还需要 `pip install -e .` 安装官方 SAM2（`torch>=2.5.1`、`torchvision>=0.20.1`），并在推理前后释放显存。与 LingBot 推理串行，禁止同时占用 3090。
+- Worker 还需要固定安装官方 SAM2，并设置 `SAM2_BUILD_CUDA=0` 避免可选 extension 改动已验证的 Torch/CUDA；`requirements.autodl.txt` 已包含视频解码所需的 `hydra-core`、`iopath` 和 `eva-decord`。与 LingBot 推理串行，禁止同时占用 3090。
 - 用户提示坐标是原视频像素坐标（`normalize_coords=True` 由 SAM2 内部归一化），mask 会先按 LingBot `crop` 预处理几何对齐到 sidecar 尺寸，再与 depth/confidence 同步过滤进入 TSDF。
 - SAM2 只做区域分割与动态区清理，不承担三维表面重建；其输出是逐帧压缩 bitmask，在 Worker 内存中直接消费，不回传浏览器、不落盘为第二份 RGB。
 
